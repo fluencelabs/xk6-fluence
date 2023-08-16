@@ -1,9 +1,6 @@
 package fluence
 
 import (
-	"fmt"
-	"time"
-
 	"github.com/dop251/goja"
 	"github.com/sirupsen/logrus"
 
@@ -67,16 +64,9 @@ func (*RootModule) NewModuleInstance(virtualUser modules.VU) modules.Instance {
 	return moduleInstance
 }
 
-type Timestamp time.Time
-
-func (ct Timestamp) MarshalJSON() ([]byte, error) {
-	t := time.Time(ct)
-	unixTimestamp := t.UnixMilli()
-	return []byte(fmt.Sprintf("%d", unixTimestamp)), nil
-}
-
 func (m *Module) Exports() modules.Exports {
 	return modules.Exports{
 		Default: m.Fluence.exports,
-	}
+		}
 }
+

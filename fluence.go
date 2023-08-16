@@ -3,6 +3,7 @@ package fluence
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -19,7 +20,7 @@ type Particle struct {
 	Action     string    `json:"action"`
 	ID         uuid.UUID `json:"id"`
 	InitPeerId peer.ID   `json:"init_peer_id"`
-	Timestamp  Timestamp `json:"timestamp"`
+	Timestamp  timestamp `json:"timestamp"`
 	Ttl        uint32    `json:"ttl"`
 	Script     string    `json:"script"`
 	Signature  []int     `json:"signature"`
@@ -57,7 +58,7 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 	particle.Action = "Particle"
 	particle.ID = uuid.New()
 	particle.InitPeerId = host.ID()
-	particle.Timestamp = Timestamp(time.Now())
+	particle.Timestamp = timestamp(time.Now())
 	particle.Ttl = 3600
 	particle.Script = data
 	particle.Signature = []int{}
@@ -121,4 +122,12 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 	})
 
 	return true
+}
+
+type timestamp time.Time
+
+func (ct timestamp) MarshalJSON() ([]byte, error) {
+	t := time.Time(ct)
+	unixTimestamp := t.UnixMilli()
+	return []byte(fmt.Sprintf("%d", unixTimestamp)), nil
 }
