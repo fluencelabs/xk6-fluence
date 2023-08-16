@@ -33,7 +33,9 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 
 	remoteAddr, err := peer.AddrInfoFromString(relay)
 	if err != nil {
-		log.Warn("Wrong relay address: %v %v", relay, err)
+		log.WithFields(log.Fields{
+			"relay": relay,
+		}).Warn("Wrong relay address.", err)
 		return false
 	}
 
@@ -44,7 +46,7 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 		libp2p.EnableRelay(),
 	)
 	if err != nil {
-		logger.Error("Failed to create peer: %v", err)
+		logger.Error("Failed to create peer.", err)
 		return false
 	}
 	host.SetStreamHandler("/fluence/particle/2.0.0", func(s network.Stream) {
@@ -67,30 +69,30 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 	json, err := json.Marshal(particle)
 
 	if err != nil {
-		log.Error("Failed to serialize particle", err)
+		log.Error("Failed to serialize particle.", err)
 		return false
 	}
 
 	if err := host.Connect(ctx, *remoteAddr); err != nil {
-		log.Error("Failed to connect host and relay: %v", err)
+		log.Error("Failed to connect host and relay.", err)
 		return false
 	}
 	stream, err := host.NewStream(network.WithUseTransient(ctx, "fluence/particle/2.0.0"), remoteAddr.ID, "/fluence/particle/2.0.0")
 	if err != nil {
-		log.Error("Could not open stream: %v", err)
+		log.Error("Could not open stream.", err)
 		return false
 	}
 	defer stream.Close()
 
 	_, err = stream.Write(varint.ToUvarint(uint64(len(json))))
 	if err != nil {
-		logger.Error("Could not send message: %v", err)
+		logger.Error("Could not send message.", err)
 		return false
 	}
 
 	_, err = stream.Write(json)
 	if err != nil {
-		log.Error("Could not send message: %v", err)
+		log.Error("Could not send message.", err)
 		return false
 	}
 
