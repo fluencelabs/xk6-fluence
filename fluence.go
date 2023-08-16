@@ -3,7 +3,6 @@ package fluence
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"time"
 
@@ -12,23 +11,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-varint"
-	"go.k6.io/k6/js/modules"
+	"go.k6.io/k6/metrics"
 )
-
-func init() {
-	modules.Register("k6/x/fluence", new(Fluence))
-}
-
-type Fluence struct {
-}
-
-type Timestamp time.Time
-
-func (ct Timestamp) MarshalJSON() ([]byte, error) {
-	t := time.Time(ct)
-	unixTimestamp := t.UnixMilli()
-	return []byte(fmt.Sprintf("%d", unixTimestamp)), nil
-}
 
 type Particle struct {
 	Action     string    `json:"action"`
@@ -58,7 +42,7 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 		libp2p.EnableRelay(),
 	)
 	if err != nil {
-		log.Printf("Failed to create peer: %v", err)
+		logger.Error("Failed to create peer: %v", err)
 		return false
 	}
 	host.SetStreamHandler("/fluence/particle/2.0.0", func(s network.Stream) {
@@ -81,12 +65,12 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 	json, err := json.Marshal(particle)
 
 	if err != nil {
-		fmt.Printf("Failed to serialize particle", err)
+		logger.Error("Failed to serialize particle", err)
 		return false
 	}
 
 	if err := host.Connect(ctx, *remoteAddr); err != nil {
-		log.Printf("Failed to connect host and relay: %v", err)
+		logger.Error("Failed to connect host and relay: %v", err)
 		return false
 	}
 	stream, err := host.NewStream(network.WithUseTransient(ctx, "fluence/particle/2.0.0"), remoteAddr.ID, "/fluence/particle/2.0.0")
@@ -98,16 +82,42 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 
 	_, err = stream.Write(varint.ToUvarint(uint64(len(json))))
 	if err != nil {
-		log.Printf("Could not send message: %v", err)
+		logger.Error("Could not send message: %v", err)
 		return false
 	}
 
 	_, err = stream.Write(json)
 	if err != nil {
-		log.Printf("Could not send message: %v", err)
+		logger.Error("Could not send message: %v", err)
 		return false
 	}
 
 	stream.Read(make([]byte, 1))
+
+	state := f.vu.State()
+	ctm := f.vu.State().Tags.GetCurrentValues()
+	now := time.Now()
+	sampleTags := ctm.Tags.With("relay", relay)
+
+	if state == nil {
+		logger.Error("Oops")
+	}
+
+	metrics.PushIfNotDone(ctx, state.Samples, metrics.ConnectedSamples{
+		Samples: []metrics.Sample{
+			{
+				Time: now,
+				TimeSeries: metrics.TimeSeries{
+					Metric: f.metrics.PeerConnectionCount,
+					Tags:   sampleTags,
+				},
+				Value:    float64(1),
+				Metadata: ctm.Metadata,
+			},
+		},
+		Tags: sampleTags,
+		Time: now,
+	})
+
 	return true
 }
