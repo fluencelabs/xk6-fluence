@@ -3,8 +3,9 @@ package fluence
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p"
@@ -31,7 +32,7 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 
 	remoteAddr, err := peer.AddrInfoFromString(relay)
 	if err != nil {
-		log.Printf("Wrong relay address: %v %v", relay, err)
+		log.Warn("Wrong relay address: %v %v", relay, err)
 		return false
 	}
 
@@ -65,17 +66,17 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 	json, err := json.Marshal(particle)
 
 	if err != nil {
-		logger.Error("Failed to serialize particle", err)
+		log.Error("Failed to serialize particle", err)
 		return false
 	}
 
 	if err := host.Connect(ctx, *remoteAddr); err != nil {
-		logger.Error("Failed to connect host and relay: %v", err)
+		log.Error("Failed to connect host and relay: %v", err)
 		return false
 	}
 	stream, err := host.NewStream(network.WithUseTransient(ctx, "fluence/particle/2.0.0"), remoteAddr.ID, "/fluence/particle/2.0.0")
 	if err != nil {
-		log.Printf("Could not open stream: %v", err)
+		log.Error("Could not open stream: %v", err)
 		return false
 	}
 	defer stream.Close()
@@ -88,7 +89,7 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 
 	_, err = stream.Write(json)
 	if err != nil {
-		logger.Error("Could not send message: %v", err)
+		log.Error("Could not send message: %v", err)
 		return false
 	}
 
@@ -100,7 +101,7 @@ func (f *Fluence) SendParticle(relay, data string) bool {
 	sampleTags := ctm.Tags.With("relay", relay)
 
 	if state == nil {
-		logger.Error("Oops")
+		log.Error("Could not take state")
 	}
 
 	metrics.PushIfNotDone(ctx, state.Samples, metrics.ConnectedSamples{
