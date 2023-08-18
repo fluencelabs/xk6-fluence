@@ -60,6 +60,7 @@ func (*RootModule) NewModuleInstance(virtualUser modules.VU) modules.Instance {
 	}
 
 	mustExport("sendParticle", moduleInstance.SendParticle)
+	mustExport("connect", moduleInstance.Connect)
 
 	return moduleInstance
 }
@@ -67,6 +68,5 @@ func (*RootModule) NewModuleInstance(virtualUser modules.VU) modules.Instance {
 func (m *Module) Exports() modules.Exports {
 	return modules.Exports{
 		Default: m.Fluence.exports,
-		}
+	}
 }
-

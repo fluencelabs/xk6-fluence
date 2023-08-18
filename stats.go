@@ -9,17 +9,23 @@ import (
 
 type fluenceMetrics struct {
 	PeerConnectionCount *metrics.Metric
+	ParticleCount       *metrics.Metric
 }
 
 func registerMetrics(vu modules.VU) (fluenceMetrics, error) {
 	var err error
 	registry := vu.InitEnv().Registry
-	fluenceMetrics := fluenceMetrics{}
+	instance := fluenceMetrics{}
 
-	if fluenceMetrics.PeerConnectionCount, err = registry.NewMetric(
+	if instance.PeerConnectionCount, err = registry.NewMetric(
 		"fluence_peer_connection_count", metrics.Counter); err != nil {
-		return fluenceMetrics, errors.Unwrap(err)
+		return instance, errors.Unwrap(err)
 	}
 
-	return fluenceMetrics, nil
+	if instance.ParticleCount, err = registry.NewMetric(
+		"fluence_particle_count", metrics.Counter); err != nil {
+		return instance, errors.Unwrap(err)
+	}
+
+	return instance, nil
 }
