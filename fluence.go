@@ -76,7 +76,6 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 	})
 
 	finalizer := func() {
-		log.Info("finalizer")
 		err = host.Close()
 		if err != nil {
 			log.Warn("Could not close peer")
@@ -169,9 +168,7 @@ func (c *Connection) Send(script string) error {
 		log.Error("Could not flush message.", err)
 		return SendFailed
 	}
-
-	log.Info("Send")
-
+	
 	state := c.f.vu.State()
 	ctm := c.f.vu.State().Tags.GetCurrentValues()
 	now := time.Now()
