@@ -1,6 +1,7 @@
 package fluence
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,7 +32,7 @@ type Particle struct {
 type Connection struct {
 	f         *Fluence
 	finalizer context.CancelFunc
-	stream    network.Stream
+	writer    *bufio.Writer
 	PeerId    peer.ID
 	relay     string
 }
@@ -63,8 +64,9 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 	}
 
 	stream, err := host.NewStream(network.WithUseTransient(ctx, "fluence/particle/2.0.0"), remoteAddr.ID, "/fluence/particle/2.0.0")
+	writer := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 	if err != nil {
-		logger.Error("Could not create stream.", err)
+		logger.Error("Could not create writer.", err)
 		cancel()
 		return nil, ConnectionFailed
 	}
@@ -76,9 +78,19 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 	})
 
 	finalizer := func() {
-		err := stream.Close()
+		err := writer.Flush()
+		if err != nil {
+			log.Warn("Could not flush writer")
+			return
+		}
+		err = stream.Close()
 		if err != nil {
 			log.Warn("Could not close stream")
+			return
+		}
+		err = host.Close()
+		if err != nil {
+			log.Warn("Could not close peer")
 			return
 		}
 		cancel()
@@ -87,7 +99,7 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 	con := Connection{}
 	con.f = f
 	con.finalizer = finalizer
-	con.stream = stream
+	con.writer = writer.Writer
 	con.PeerId = host.ID()
 	con.relay = relay
 
@@ -138,15 +150,20 @@ func (c *Connection) Send(script string) error {
 		return SendFailed
 	}
 
-	_, err = c.stream.Write(varint.ToUvarint(uint64(len(serialisedParticle))))
+	_, err = c.writer.Write(varint.ToUvarint(uint64(len(serialisedParticle))))
 	if err != nil {
 		logger.Error("Could not write len.", err)
 		return SendFailed
 	}
 
-	_, err = c.stream.Write(serialisedParticle)
+	_, err = c.writer.Write(serialisedParticle)
 	if err != nil {
 		log.Error("Could not write message.", err)
+		return SendFailed
+	}
+	err = c.writer.Flush()
+	if err != nil {
+		log.Error("Could not flush message.", err)
 		return SendFailed
 	}
 
