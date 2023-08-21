@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/libp2p/go-libp2p/core/host"
 	"io"
 	"time"
 
@@ -30,11 +31,12 @@ type Particle struct {
 }
 
 type Connection struct {
-	f         *Fluence
-	finalizer context.CancelFunc
-	writer    *bufio.Writer
-	PeerId    peer.ID
-	relay     string
+	f          *Fluence
+	finalizer  context.CancelFunc
+	host       host.Host
+	PeerId     peer.ID
+	relay      string
+	remoteAddr peer.AddrInfo
 }
 
 func (f *Fluence) Connect(relay string) (*Connection, error) {
@@ -63,31 +65,18 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 		return nil, ConnectionFailed
 	}
 
-	stream, err := host.NewStream(network.WithUseTransient(ctx, "fluence/particle/2.0.0"), remoteAddr.ID, "/fluence/particle/2.0.0")
-	writer := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-	if err != nil {
-		logger.Error("Could not create writer.", err)
-		cancel()
-		return nil, ConnectionFailed
-	}
 	host.SetStreamHandler("/fluence/particle/2.0.0", func(s network.Stream) {
-		_, err := io.ReadAll(s)
-		if err != nil {
-			return
+		f := func() {
+			_, err := io.ReadAll(s)
+			if err != nil {
+				return
+			}
 		}
+		f()
 	})
 
 	finalizer := func() {
-		err := writer.Flush()
-		if err != nil {
-			log.Warn("Could not flush writer")
-			return
-		}
-		err = stream.Close()
-		if err != nil {
-			log.Warn("Could not close stream")
-			return
-		}
+		log.Info("finalizer")
 		err = host.Close()
 		if err != nil {
 			log.Warn("Could not close peer")
@@ -99,9 +88,10 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 	con := Connection{}
 	con.f = f
 	con.finalizer = finalizer
-	con.writer = writer.Writer
+	con.host = host
 	con.PeerId = host.ID()
 	con.relay = relay
+	con.remoteAddr = *remoteAddr
 
 	state := f.vu.State()
 	ctm := f.vu.State().Tags.GetCurrentValues()
@@ -143,6 +133,19 @@ func (c *Connection) Send(script string) error {
 	particle.Signature = []int{}
 	particle.Data = []byte{}
 
+	stream, err := c.host.NewStream(network.WithUseTransient(ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
+	if err != nil {
+		logger.Error("Could not create stream.", err)
+		return ConnectionFailed
+	}
+	defer func(stream network.Stream) {
+		err := stream.Close()
+		if err != nil {
+			log.Warn("Could not close stream", err)
+		}
+	}(stream)
+	writer := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
+
 	serialisedParticle, err := json.Marshal(particle)
 
 	if err != nil {
@@ -150,22 +153,24 @@ func (c *Connection) Send(script string) error {
 		return SendFailed
 	}
 
-	_, err = c.writer.Write(varint.ToUvarint(uint64(len(serialisedParticle))))
+	_, err = writer.Write(varint.ToUvarint(uint64(len(serialisedParticle))))
 	if err != nil {
 		logger.Error("Could not write len.", err)
 		return SendFailed
 	}
 
-	_, err = c.writer.Write(serialisedParticle)
+	_, err = writer.Write(serialisedParticle)
 	if err != nil {
 		log.Error("Could not write message.", err)
 		return SendFailed
 	}
-	err = c.writer.Flush()
+	err = writer.Flush()
 	if err != nil {
 		log.Error("Could not flush message.", err)
 		return SendFailed
 	}
+
+	log.Info("Send")
 
 	state := c.f.vu.State()
 	ctm := c.f.vu.State().Tags.GetCurrentValues()
