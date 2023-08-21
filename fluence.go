@@ -29,11 +29,11 @@ type Particle struct {
 }
 
 type Connection struct {
-	f      *Fluence
-	cancel context.CancelFunc
-	stream network.Stream
-	PeerId peer.ID
-	relay  string
+	f         *Fluence
+	finalizer context.CancelFunc
+	stream    network.Stream
+	PeerId    peer.ID
+	relay     string
 }
 
 func (f *Fluence) Connect(relay string) (*Connection, error) {
@@ -68,10 +68,25 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 		cancel()
 		return nil, ConnectionFailed
 	}
+	host.SetStreamHandler("/fluence/particle/2.0.0", func(s network.Stream) {
+		_, err := io.ReadAll(s)
+		if err != nil {
+			return
+		}
+	})
+
+	finalizer := func() {
+		err := stream.Close()
+		if err != nil {
+			log.Warn("Could not close stream")
+			return
+		}
+		cancel()
+	}
 
 	con := Connection{}
 	con.f = f
-	con.cancel = cancel
+	con.finalizer = finalizer
 	con.stream = stream
 	con.PeerId = host.ID()
 	con.relay = relay
@@ -135,11 +150,6 @@ func (c *Connection) Send(script string) error {
 		return SendFailed
 	}
 
-	if err != nil {
-		log.Error("Could not send message.", err)
-		return SendFailed
-	}
-
 	state := c.f.vu.State()
 	ctm := c.f.vu.State().Tags.GetCurrentValues()
 	now := time.Now()
@@ -169,16 +179,7 @@ func (c *Connection) Send(script string) error {
 }
 
 func (c *Connection) Close() {
-	time.Sleep(10 * time.Second)
-	_, err := io.ReadAll(c.stream)
-	if err != nil {
-		return
-	}
-	err = c.stream.Close()
-	if err != nil {
-		return
-	}
-	c.cancel()
+	c.finalizer()
 }
 
 func (f *Fluence) SendParticle(relay, script string) error {
