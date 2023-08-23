@@ -262,10 +262,8 @@ func (cb *CachedBuilder) Connect() (*CachedConnection, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if value, found := ConnectionCache.Get(key); found {
-		log.Info("found ", key)
 		return value.(*CachedConnection), nil
 	} else {
-		log.Info("not found ", key)
 		underlyingConnection, err := cb.b.Connect()
 		if err != nil {
 			return nil, err
