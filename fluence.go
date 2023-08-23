@@ -42,8 +42,7 @@ type Builder struct {
 }
 
 type CachedBuilder struct {
-	b         *Builder
-	cacheType CacheType
+	b *Builder
 }
 
 type Connection struct {
@@ -74,17 +73,9 @@ func (f *Fluence) Builder(relay string) (*Builder, error) {
 	return &builder, nil
 }
 
-type CacheType int8
-
-const (
-	PerVU  CacheType = 0
-	Global CacheType = 1
-)
-
-func (b *Builder) CacheBy(cacheType CacheType) *CachedBuilder {
+func (b *Builder) Cached() *CachedBuilder {
 	builder := CachedBuilder{}
 	builder.b = b
-	builder.cacheType = cacheType
 	return &builder
 }
 
@@ -249,14 +240,8 @@ func (c *Connection) Send(script string) error {
 }
 
 func (cb *CachedBuilder) Connect() (*CachedConnection, error) {
-	key := ""
-	switch cb.cacheType {
-	case PerVU:
-		id := cb.b.f.vu.State().VUID
-		key = fmt.Sprintf("%d_%s", id, cb.b.relay)
-	case Global:
-		key = cb.b.relay
-	}
+	id := cb.b.f.vu.State().VUID
+	key := fmt.Sprintf("%d_%s", id, cb.b.relay)
 	if value, found := ConnectionCache.Get(key); found {
 		return value.(*CachedConnection), nil
 	} else {
