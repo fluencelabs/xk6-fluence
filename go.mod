@@ -6,8 +6,8 @@ require (
 	github.com/dop251/goja v0.0.0-20230812105242-81d76064690d
 	github.com/google/uuid v1.3.0
 	github.com/libp2p/go-libp2p v0.29.2
-	github.com/libp2p/go-libp2p-mplex v0.8.0
 	github.com/multiformats/go-varint v0.0.7
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/sirupsen/logrus v1.9.3
 	go.k6.io/k6 v0.46.0
 )
@@ -48,7 +48,6 @@ require (
 	github.com/libp2p/go-cidranger v1.1.0 // indirect
 	github.com/libp2p/go-flow-metrics v0.1.0 // indirect
 	github.com/libp2p/go-libp2p-asn-util v0.3.0 // indirect
-	github.com/libp2p/go-mplex v0.7.0 // indirect
 	github.com/libp2p/go-msgio v0.3.0 // indirect
 	github.com/libp2p/go-nat v0.2.0 // indirect
 	github.com/libp2p/go-netroute v0.2.1 // indirect

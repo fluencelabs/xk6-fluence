@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/patrickmn/go-cache"
 	"io"
 	"time"
 
@@ -19,6 +20,10 @@ import (
 	"github.com/multiformats/go-varint"
 )
 
+var (
+	ConnectionCache *cache.Cache
+)
+
 type Particle struct {
 	Action     string    `json:"action"`
 	ID         uuid.UUID `json:"id"`
@@ -30,8 +35,20 @@ type Particle struct {
 	Data       []byte    `json:"data"`
 }
 
+type Builder struct {
+	f          *Fluence
+	relay      string
+	remoteAddr peer.AddrInfo
+}
+
+type CachedBuilder struct {
+	b         *Builder
+	cacheType CacheType
+}
+
 type Connection struct {
 	f          *Fluence
+	ctx        context.Context
 	finalizer  context.CancelFunc
 	host       host.Host
 	PeerId     peer.ID
@@ -39,33 +56,59 @@ type Connection struct {
 	remoteAddr peer.AddrInfo
 }
 
-func (f *Fluence) Connect(relay string) (*Connection, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+type CachedConnection struct {
+	connection *Connection
+}
+
+func (f *Fluence) Builder(relay string) (*Builder, error) {
 	remoteAddr, err := peer.AddrInfoFromString(relay)
 	if err != nil {
-		cancel()
 		return nil, WrongRelayAddress
 	}
 
-	host, err := libp2p.New(
+	builder := Builder{}
+	builder.f = f
+	builder.relay = relay
+	builder.remoteAddr = *remoteAddr
+
+	return &builder, nil
+}
+
+type CacheType int8
+
+const (
+	PerVU  CacheType = 0
+	Global CacheType = 1
+)
+
+func (b *Builder) CacheBy(cacheType CacheType) *CachedBuilder {
+	builder := CachedBuilder{}
+	builder.b = b
+	builder.cacheType = cacheType
+	return &builder
+}
+
+func (b *Builder) Connect() (*Connection, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	peerInstance, err := libp2p.New(
 		libp2p.NoListenAddrs,
 		// Usually EnableRelay() is not required as it is enabled by default
 		// but NoListenAddrs overrides this, so we're adding it in explictly again.
 		libp2p.EnableRelay(),
 	)
 	if err != nil {
-		logger.Error("Could not create peer.", err)
+		logger.Error("Could not create peerInstance.", err)
 		cancel()
 		return nil, ConnectionFailed
 	}
 
-	if err := host.Connect(ctx, *remoteAddr); err != nil {
+	if err := peerInstance.Connect(ctx, b.remoteAddr); err != nil {
 		logger.Error("Could not connect to remote addr.", err)
 		cancel()
 		return nil, ConnectionFailed
 	}
 
-	host.SetStreamHandler("/fluence/particle/2.0.0", func(s network.Stream) {
+	peerInstance.SetStreamHandler("/fluence/particle/2.0.0", func(s network.Stream) {
 		f := func() {
 			_, err := io.ReadAll(s)
 			if err != nil {
@@ -76,26 +119,27 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 	})
 
 	finalizer := func() {
-		err = host.Close()
+		err = peerInstance.Close()
 		if err != nil {
-			log.Warn("Could not close peer")
+			log.Warn("Could not close peerInstance")
 			return
 		}
 		cancel()
 	}
 
 	con := Connection{}
-	con.f = f
+	con.f = b.f
+	con.ctx = ctx
 	con.finalizer = finalizer
-	con.host = host
-	con.PeerId = host.ID()
-	con.relay = relay
-	con.remoteAddr = *remoteAddr
+	con.host = peerInstance
+	con.PeerId = peerInstance.ID()
+	con.relay = b.relay
+	con.remoteAddr = b.remoteAddr
 
-	state := f.vu.State()
-	ctm := f.vu.State().Tags.GetCurrentValues()
+	state := b.f.vu.State()
+	ctm := b.f.vu.State().Tags.GetCurrentValues()
 	now := time.Now()
-	sampleTags := ctm.Tags.With("relay", relay)
+	sampleTags := ctm.Tags.With("relay", b.relay)
 
 	if state == nil {
 		return nil, ConnectionFailed
@@ -106,7 +150,7 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 			{
 				Time: now,
 				TimeSeries: metrics.TimeSeries{
-					Metric: f.metrics.PeerConnectionCount,
+					Metric: b.f.metrics.PeerConnectionCount,
 					Tags:   sampleTags,
 				},
 				Value:    float64(1),
@@ -120,8 +164,15 @@ func (f *Fluence) Connect(relay string) (*Connection, error) {
 	return &con, nil
 }
 
+func (c *CachedConnection) Send(script string) error {
+	err := c.connection.Send(script)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *Connection) Send(script string) error {
-	ctx := context.Background()
 	particle := Particle{}
 	particle.Action = "Particle"
 	particle.ID = uuid.New()
@@ -132,7 +183,7 @@ func (c *Connection) Send(script string) error {
 	particle.Signature = []int{}
 	particle.Data = []byte{}
 
-	stream, err := c.host.NewStream(network.WithUseTransient(ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
+	stream, err := c.host.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
 	if err != nil {
 		logger.Error("Could not create stream.", err)
 		return ConnectionFailed
@@ -168,7 +219,7 @@ func (c *Connection) Send(script string) error {
 		log.Error("Could not flush message.", err)
 		return SendFailed
 	}
-	
+
 	state := c.f.vu.State()
 	ctm := c.f.vu.State().Tags.GetCurrentValues()
 	now := time.Now()
@@ -178,7 +229,7 @@ func (c *Connection) Send(script string) error {
 		return ConnectionFailed
 	}
 
-	metrics.PushIfNotDone(ctx, state.Samples, metrics.ConnectedSamples{
+	metrics.PushIfNotDone(c.ctx, state.Samples, metrics.ConnectedSamples{
 		Samples: []metrics.Sample{
 			{
 				Time: now,
@@ -197,12 +248,43 @@ func (c *Connection) Send(script string) error {
 	return nil
 }
 
+func (cb *CachedBuilder) Connect() (*CachedConnection, error) {
+	key := ""
+	switch cb.cacheType {
+	case PerVU:
+		id := cb.b.f.vu.State().VUID
+		key = fmt.Sprintf("%d_%s", id, cb.b.relay)
+	case Global:
+		key = cb.b.relay
+	}
+	if value, found := ConnectionCache.Get(key); found {
+		return value.(*CachedConnection), nil
+	} else {
+		underlyingConnection, err := cb.b.Connect()
+		if err != nil {
+			return nil, err
+		}
+		connection := CachedConnection{}
+		connection.connection = underlyingConnection
+		ConnectionCache.Set(key, &connection, cache.NoExpiration)
+		return &connection, nil
+	}
+}
+
+func (c *CachedConnection) Close() {
+
+}
+
 func (c *Connection) Close() {
 	c.finalizer()
 }
 
 func (f *Fluence) SendParticle(relay, script string) error {
-	connection, err := f.Connect(relay)
+	builder, err := f.Builder(relay)
+	if err != nil {
+		return err
+	}
+	connection, err := builder.Connect()
 	if err != nil {
 		return err
 	}
