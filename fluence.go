@@ -8,6 +8,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/patrickmn/go-cache"
 	"io"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -22,6 +23,7 @@ import (
 
 var (
 	ConnectionCache *cache.Cache
+	mu              sync.Mutex
 )
 
 type Particle struct {
@@ -42,7 +44,8 @@ type Builder struct {
 }
 
 type CachedBuilder struct {
-	b *Builder
+	b         *Builder
+	cacheType CacheType
 }
 
 type Connection struct {
@@ -73,9 +76,17 @@ func (f *Fluence) Builder(relay string) (*Builder, error) {
 	return &builder, nil
 }
 
-func (b *Builder) Cached() *CachedBuilder {
+type CacheType int8
+
+const (
+	PerVU  CacheType = 0
+	Global CacheType = 1
+)
+
+func (b *Builder) CacheBy(cacheType CacheType) *CachedBuilder {
 	builder := CachedBuilder{}
 	builder.b = b
+	builder.cacheType = cacheType
 	return &builder
 }
 
@@ -240,11 +251,21 @@ func (c *Connection) Send(script string) error {
 }
 
 func (cb *CachedBuilder) Connect() (*CachedConnection, error) {
-	id := cb.b.f.vu.State().VUID
-	key := fmt.Sprintf("%d_%s", id, cb.b.relay)
+	key := ""
+	switch cb.cacheType {
+	case PerVU:
+		id := cb.b.f.vu.State().VUID
+		key = fmt.Sprintf("%d_%s", id, cb.b.relay)
+	case Global:
+		key = cb.b.relay
+	}
+	mu.Lock()
+	defer mu.Unlock()
 	if value, found := ConnectionCache.Get(key); found {
+		log.Info("found ", key)
 		return value.(*CachedConnection), nil
 	} else {
+		log.Info("not found ", key)
 		underlyingConnection, err := cb.b.Connect()
 		if err != nil {
 			return nil, err
