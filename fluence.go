@@ -250,6 +250,23 @@ func (c *Connection) Send(script string) error {
 	return nil
 }
 
+type create func() (interface{}, error)
+
+func getOrSet(key string, fn create) (interface{}, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if value, found := ConnectionCache.Get(key); found {
+		return value, nil
+	} else {
+		value, err := fn()
+		if err != nil {
+			return nil, err
+		}
+		ConnectionCache.Set(key, value, cache.NoExpiration)
+		return value, nil
+	}
+}
+
 func (cb *CachedBuilder) Connect() (*CachedConnection, error) {
 	key := ""
 	switch cb.cacheType {
@@ -259,20 +276,20 @@ func (cb *CachedBuilder) Connect() (*CachedConnection, error) {
 	case Global:
 		key = cb.b.relay
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if value, found := ConnectionCache.Get(key); found {
-		return value.(*CachedConnection), nil
-	} else {
+	connect := func() (interface{}, error) {
 		underlyingConnection, err := cb.b.Connect()
 		if err != nil {
 			return nil, err
 		}
 		connection := CachedConnection{}
 		connection.connection = underlyingConnection
-		ConnectionCache.Set(key, &connection, cache.NoExpiration)
 		return &connection, nil
 	}
+	connection, err := getOrSet(key, connect)
+	if err != nil {
+		return nil, err
+	}
+	return connection.(*CachedConnection), nil
 }
 
 func (c *CachedConnection) Close() {
