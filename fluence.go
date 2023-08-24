@@ -3,15 +3,18 @@ package fluence
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
+	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/patrickmn/go-cache"
-	"io"
 	"sync"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	logging "github.com/ipfs/go-log/v2"
 	"go.k6.io/k6/metrics"
 
 	"github.com/google/uuid"
@@ -20,6 +23,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-varint"
 )
+
+var log = logging.Logger("fluence")
 
 var (
 	ConnectionCache *cache.Cache
@@ -49,13 +54,13 @@ type CachedBuilder struct {
 }
 
 type Connection struct {
-	f          *Fluence
-	ctx        context.Context
-	finalizer  context.CancelFunc
-	host       host.Host
-	PeerId     peer.ID
-	relay      string
-	remoteAddr peer.AddrInfo
+	f            *Fluence
+	ctx          context.Context
+	finalizer    context.CancelFunc
+	peerInstance host.Host
+	PeerId       peer.ID
+	relay        string
+	remoteAddr   peer.AddrInfo
 }
 
 type CachedConnection struct {
@@ -91,39 +96,84 @@ func (b *Builder) CacheBy(cacheType CacheType) *CachedBuilder {
 }
 
 func (b *Builder) Connect() (*Connection, error) {
+	log.Debug("Connect: ", b.relay)
 	ctx, cancel := context.WithCancel(context.Background())
+	scalingLimits := rcmgr.DefaultLimits
+
+	// Add limits around included libp2p protocols
+	libp2p.SetDefaultServiceLimits(&scalingLimits)
+
+	// Turn the scaling limits into a concrete set of limits using `.AutoScale`. This
+	// scales the limits proportional to your system memory.
+	scaledDefaultLimits := scalingLimits.AutoScale()
+	// Tweak certain settings
+	cfg := rcmgr.PartialLimitConfig{
+		System: rcmgr.ResourceLimits{
+			// Allow unlimited outbound streams
+			StreamsOutbound: rcmgr.Unlimited,
+		},
+		// Everything else is default. The exact values will come from `scaledDefaultLimits` above.
+	}
+
+	// Create our limits by using our cfg and replacing the default values with values from `scaledDefaultLimits`
+	limits := cfg.Build(scaledDefaultLimits)
+
+	// The resource manager expects a limiter, se we create one from our limits.
+	limiter := rcmgr.NewFixedLimiter(limits)
+
+	rm, err := rcmgr.NewResourceManager(limiter, rcmgr.WithMetricsDisabled())
+
+	if err != nil {
+		log.Error("Could not create resource manager: ", err)
+		cancel()
+		return nil, ConnectionFailed
+	}
+
+	prvKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
+	if err != nil {
+		log.Error("Could not create private key: ", err)
+		cancel()
+		return nil, ConnectionFailed
+	}
+
+	cm, err := connmgr.NewConnManager(
+		10,
+		4000,
+	)
+
+	if err != nil {
+		log.Error("Could not create connection manager: ", err)
+		cancel()
+		return nil, ConnectionFailed
+	}
+
 	peerInstance, err := libp2p.New(
 		libp2p.NoListenAddrs,
+		libp2p.Identity(prvKey),
+		libp2p.ProtocolVersion("fluence/particle/2.0.0"),
+		libp2p.ResourceManager(rm),
+		libp2p.ConnectionManager(cm),
 		// Usually EnableRelay() is not required as it is enabled by default
 		// but NoListenAddrs overrides this, so we're adding it in explictly again.
 		libp2p.EnableRelay(),
 	)
 	if err != nil {
-		logger.Error("Could not create peerInstance.", err)
+		log.Error("Could not create peer instance: ", err)
 		cancel()
 		return nil, ConnectionFailed
 	}
 
 	if err := peerInstance.Connect(ctx, b.remoteAddr); err != nil {
-		logger.Error("Could not connect to remote addr.", err)
+		log.Error("Could not connect to remote addr: ", err)
 		cancel()
 		return nil, ConnectionFailed
 	}
 
-	peerInstance.SetStreamHandler("/fluence/particle/2.0.0", func(s network.Stream) {
-		f := func() {
-			_, err := io.ReadAll(s)
-			if err != nil {
-				return
-			}
-		}
-		f()
-	})
-
 	finalizer := func() {
+		log.Debug("Connection finalizer called")
 		err = peerInstance.Close()
 		if err != nil {
-			log.Warn("Could not close peerInstance")
+			log.Warn("Could not close peer instance: ", err)
 			return
 		}
 		cancel()
@@ -133,10 +183,10 @@ func (b *Builder) Connect() (*Connection, error) {
 	con.f = b.f
 	con.ctx = ctx
 	con.finalizer = finalizer
-	con.host = peerInstance
 	con.PeerId = peerInstance.ID()
 	con.relay = b.relay
 	con.remoteAddr = b.remoteAddr
+	con.peerInstance = peerInstance
 
 	state := b.f.vu.State()
 	ctm := b.f.vu.State().Tags.GetCurrentValues()
@@ -175,6 +225,7 @@ func (c *CachedConnection) Send(script string) error {
 }
 
 func (c *Connection) Send(script string) error {
+	log.Debug("Sending particle")
 	particle := Particle{}
 	particle.Action = "Particle"
 	particle.ID = uuid.New()
@@ -185,40 +236,41 @@ func (c *Connection) Send(script string) error {
 	particle.Signature = []int{}
 	particle.Data = []byte{}
 
-	stream, err := c.host.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
+	stream, err := c.peerInstance.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
 	if err != nil {
-		logger.Error("Could not create stream.", err)
+		log.Error("Could not create stream: ", err)
 		return ConnectionFailed
 	}
 	defer func(stream network.Stream) {
 		err := stream.Close()
 		if err != nil {
-			log.Warn("Could not close stream", err)
+			log.Warn("Could not close stream: ", err)
 		}
 	}(stream)
+
 	writer := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 
 	serialisedParticle, err := json.Marshal(particle)
 
 	if err != nil {
-		log.Error("Failed to serialize particle.", err)
+		log.Error("Failed to serialize particle: ", err)
 		return SendFailed
 	}
 
 	_, err = writer.Write(varint.ToUvarint(uint64(len(serialisedParticle))))
 	if err != nil {
-		logger.Error("Could not write len.", err)
+		log.Error("Could not write len: ", err)
 		return SendFailed
 	}
 
 	_, err = writer.Write(serialisedParticle)
 	if err != nil {
-		log.Error("Could not write message.", err)
+		log.Error("Could not write message: ", err)
 		return SendFailed
 	}
 	err = writer.Flush()
 	if err != nil {
-		log.Error("Could not flush message.", err)
+		log.Error("Could not flush message: ", err)
 		return SendFailed
 	}
 
