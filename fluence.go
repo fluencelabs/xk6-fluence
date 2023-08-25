@@ -231,7 +231,7 @@ func (c *Connection) Send(script string) error {
 	particle.ID = uuid.New()
 	particle.InitPeerId = c.PeerId
 	particle.Timestamp = timestamp(time.Now())
-	particle.Ttl = 3600
+	particle.Ttl = 60000
 	particle.Script = script
 	particle.Signature = []int{}
 	particle.Data = []byte{}
