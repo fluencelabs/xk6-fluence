@@ -225,7 +225,6 @@ func (c *CachedConnection) Send(script string) error {
 }
 
 func (c *Connection) Send(script string) error {
-	log.Debug("Sending particle")
 	particle := Particle{}
 	particle.Action = "Particle"
 	particle.ID = uuid.New()
@@ -235,6 +234,7 @@ func (c *Connection) Send(script string) error {
 	particle.Script = script
 	particle.Signature = []int{}
 	particle.Data = []byte{}
+	log.Debug("Sending particle: ", particle.ID)
 
 	stream, err := c.peerInstance.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
 	if err != nil {
