@@ -9,4 +9,4 @@ Run: `xk6 build --with xk6-fluence=.`. It will produce a binary k6 file in the s
 
 ## Example scripts
 
-There are many examples in the [script](https://github.com/fluencelabs/xk6-fluence/blob/main/scripts/) directory that show how to use various features of the extension.
+There are many examples in the [scripts](https://github.com/fluencelabs/xk6-fluence/blob/main/scripts/) directory that show how to use various features of the extension.
