@@ -129,7 +129,7 @@ func (b *Builder) Connect() (*Connection, error) {
 		return nil, ConnectionFailed
 	}
 
-	prvKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
+	prvKey, _, err := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 2048, rand.Reader)
 	if err != nil {
 		log.Error("Could not create private key: ", err)
 		cancel()
