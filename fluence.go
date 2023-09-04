@@ -5,12 +5,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/patrickmn/go-cache"
+	"io"
+	"strconv"
 	"sync"
 	"time"
 
@@ -61,6 +65,7 @@ type Connection struct {
 	PeerId       peer.ID
 	relay        string
 	remoteAddr   peer.AddrInfo
+	callbacks    sync.Map
 }
 
 type CachedConnection struct {
@@ -109,7 +114,9 @@ func (b *Builder) Connect() (*Connection, error) {
 	// Tweak certain settings
 	cfg := rcmgr.PartialLimitConfig{
 		System: rcmgr.ResourceLimits{
-			// Allow unlimited outbound streams
+			// Allow unlimited streams
+			Streams:         rcmgr.Unlimited,
+			StreamsInbound:  rcmgr.Unlimited,
 			StreamsOutbound: rcmgr.Unlimited,
 		},
 		// Everything else is default. The exact values will come from `scaledDefaultLimits` above.
@@ -169,6 +176,8 @@ func (b *Builder) Connect() (*Connection, error) {
 		return nil, ConnectionFailed
 	}
 
+	peerInstance.Peerstore().AddAddrs(b.remoteAddr.ID, b.remoteAddr.Addrs, peerstore.PermanentAddrTTL)
+
 	finalizer := func() {
 		log.Debug("Connection finalizer called")
 		err = peerInstance.Close()
@@ -187,136 +196,48 @@ func (b *Builder) Connect() (*Connection, error) {
 	con.relay = b.relay
 	con.remoteAddr = b.remoteAddr
 	con.peerInstance = peerInstance
+	con.callbacks = sync.Map{}
 
-	state := b.f.vu.State()
-	ctm := b.f.vu.State().Tags.GetCurrentValues()
-	now := time.Now()
-	sampleTags := ctm.Tags.With("relay", b.relay)
+	peerInstance.SetStreamHandler("/fluence/particle/2.0.0", func(stream network.Stream) {
+		defer func() {
+			err := stream.Close()
+			if err != nil {
+				log.Warn("Could not close inbound stream", err)
+				return
+			}
+		}()
+		log.Debug("Message arrived")
+		err := stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+		if err != nil {
+			log.Error("Could not set read deadline", err)
+			return
+		}
+		reader := bufio.NewReader(stream)
+		particle, err := readParticle(reader)
+		if err != nil {
+			log.Error("Could not read particle from stream", err)
+			return
+		}
+		log.Debugf("Particle %s arrived", particle.ID)
+		callback, found := con.callbacks.Load(particle.ID)
+		if found {
+			callback := callback.(chan *Particle)
+			callback <- particle
+		}
 
-	if state == nil {
-		return nil, ConnectionFailed
-	}
-
-	metrics.PushIfNotDone(ctx, state.Samples, metrics.ConnectedSamples{
-		Samples: []metrics.Sample{
-			{
-				Time: now,
-				TimeSeries: metrics.TimeSeries{
-					Metric: b.f.metrics.PeerConnectionCount,
-					Tags:   sampleTags,
-				},
-				Value:    float64(1),
-				Metadata: ctm.Metadata,
-			},
-		},
-		Tags: sampleTags,
-		Time: now,
 	})
+
+	err = writeMetrics(&con, []MetricValue{
+		{
+			metric: b.f.metrics.PeerConnectionCount,
+			value:  float64(1),
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	return &con, nil
-}
-
-func (c *CachedConnection) Send(script string) error {
-	err := c.connection.Send(script)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *Connection) Send(script string) error {
-	particle := Particle{}
-	particle.Action = "Particle"
-	particle.ID = uuid.New()
-	particle.InitPeerId = c.PeerId
-	particle.Timestamp = timestamp(time.Now())
-	particle.Ttl = 60000
-	particle.Script = script
-	particle.Signature = []int{}
-	particle.Data = []byte{}
-	log.Debug("Sending particle: ", particle.ID)
-
-	stream, err := c.peerInstance.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
-	if err != nil {
-		log.Error("Could not create stream: ", err)
-		return ConnectionFailed
-	}
-	defer func(stream network.Stream) {
-		err := stream.Close()
-		if err != nil {
-			log.Warn("Could not close stream: ", err)
-		}
-	}(stream)
-
-	writer := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-
-	serialisedParticle, err := json.Marshal(particle)
-
-	if err != nil {
-		log.Error("Failed to serialize particle: ", err)
-		return SendFailed
-	}
-
-	_, err = writer.Write(varint.ToUvarint(uint64(len(serialisedParticle))))
-	if err != nil {
-		log.Error("Could not write len: ", err)
-		return SendFailed
-	}
-
-	_, err = writer.Write(serialisedParticle)
-	if err != nil {
-		log.Error("Could not write message: ", err)
-		return SendFailed
-	}
-	err = writer.Flush()
-	if err != nil {
-		log.Error("Could not flush message: ", err)
-		return SendFailed
-	}
-
-	state := c.f.vu.State()
-	ctm := c.f.vu.State().Tags.GetCurrentValues()
-	now := time.Now()
-	sampleTags := ctm.Tags.With("relay", c.relay)
-
-	if state == nil {
-		return ConnectionFailed
-	}
-
-	metrics.PushIfNotDone(c.ctx, state.Samples, metrics.ConnectedSamples{
-		Samples: []metrics.Sample{
-			{
-				Time: now,
-				TimeSeries: metrics.TimeSeries{
-					Metric: c.f.metrics.ParticleCount,
-					Tags:   sampleTags,
-				},
-				Value:    float64(1),
-				Metadata: ctm.Metadata,
-			},
-		},
-		Tags: sampleTags,
-		Time: now,
-	})
-
-	return nil
-}
-
-type create func() (interface{}, error)
-
-func getOrSet(key string, fn create) (interface{}, error) {
-	mu.Lock()
-	defer mu.Unlock()
-	if value, found := ConnectionCache.Get(key); found {
-		return value, nil
-	} else {
-		value, err := fn()
-		if err != nil {
-			return nil, err
-		}
-		ConnectionCache.Set(key, value, cache.NoExpiration)
-		return value, nil
-	}
 }
 
 func (cb *CachedBuilder) Connect() (*CachedConnection, error) {
@@ -352,6 +273,130 @@ func (c *Connection) Close() {
 	c.finalizer()
 }
 
+func (c *CachedConnection) Send(script string) error {
+	err := c.connection.Send(script)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *CachedConnection) Execute(script string) (*Particle, error) {
+	particle, err := c.connection.Execute(script)
+	if err != nil {
+		return nil, err
+	}
+	return particle, nil
+}
+
+func (c *Connection) Send(script string) error {
+	particle := makeParticle(script, c.PeerId)
+	log.Debug("Sending particle: ", particle.ID)
+
+	stream, err := c.peerInstance.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
+	if err != nil {
+		log.Error("Could not create stream: ", err)
+		return ConnectionFailed
+	}
+	defer func(stream network.Stream) {
+		err := stream.Close()
+		if err != nil {
+			log.Warn("Could not close stream: ", err)
+		}
+	}(stream)
+
+	readWriter := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
+
+	err = writeParticle(readWriter.Writer, particle)
+	if err != nil {
+		log.Error("Could not write particle to the stream: ", err)
+		return SendFailed
+	}
+
+	err = writeMetrics(c, []MetricValue{
+		{
+			metric: c.f.metrics.ParticleSendCount,
+			value:  float64(1),
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Connection) Execute(script string) (*Particle, error) {
+	particle := makeParticle(script, c.PeerId)
+	log.Debug("Execute particle: ", particle.ID)
+
+	start := time.Now()
+	callback, err := func() (chan *Particle, error) {
+		stream, err := c.peerInstance.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
+		if err != nil {
+			log.Error("Could not create stream: ", err)
+			return nil, ConnectionFailed
+		}
+		defer func(stream network.Stream) {
+			err := stream.Close()
+			if err != nil {
+				log.Warn("Could not close stream: ", err)
+			}
+		}(stream)
+
+		callback := make(chan *Particle, 1)
+		c.callbacks.Store(particle.ID, callback)
+		err = writeParticle(bufio.NewWriter(stream), particle)
+		if err != nil {
+			return nil, ExecuteFailed
+		}
+		err = writeMetrics(c, []MetricValue{
+			{
+				metric: c.f.metrics.ParticleSendCount,
+				value:  float64(1),
+			},
+		})
+
+		return callback, nil
+	}()
+
+	if err != nil {
+		return nil, ExecuteFailed
+	}
+
+	defer func() {
+		callback, loaded := c.callbacks.LoadAndDelete(particle.ID)
+		if loaded {
+			callback := callback.(chan *Particle)
+			close(callback)
+		}
+	}()
+
+	select {
+	case response := <-callback:
+		now := time.Now()
+		duration := now.Sub(start)
+
+		err = writeMetrics(c, []MetricValue{
+			{
+				metric: c.f.metrics.ParticleReceiveCount,
+				value:  float64(1),
+			},
+			{
+				metric: c.f.metrics.ParticleExecutionTime,
+				value:  metrics.D(duration),
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		return response, nil
+	case <-time.After(time.Minute):
+		return nil, errors.New("particle timeout")
+	}
+}
+
 func (f *Fluence) SendParticle(relay, script string) error {
 	builder, err := f.Builder(relay)
 	if err != nil {
@@ -369,10 +414,155 @@ func (f *Fluence) SendParticle(relay, script string) error {
 	return nil
 }
 
+func (f *Fluence) ExecuteParticle(relay, script string) (*Particle, error) {
+	builder, err := f.Builder(relay)
+	if err != nil {
+		return nil, err
+	}
+	connection, err := builder.Connect()
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	particle, err := connection.Execute(script)
+	if err != nil {
+		return nil, err
+	}
+	return particle, nil
+}
+
 type timestamp time.Time
 
 func (ct timestamp) MarshalJSON() ([]byte, error) {
 	t := time.Time(ct)
 	unixTimestamp := t.UnixMilli()
 	return []byte(fmt.Sprintf("%d", unixTimestamp)), nil
+}
+
+func (ct *timestamp) UnmarshalJSON(data []byte) error {
+	// Parse the JSON data into an integer representing Unix milliseconds
+	unixMillis, err := strconv.ParseInt(string(data), 10, 64)
+	if err != nil {
+		return err
+	}
+
+	// Convert Unix milliseconds to a time.Time value
+	t := time.Unix(0, unixMillis*int64(time.Millisecond))
+
+	// Set the timestamp value to the converted time.Time
+	*ct = timestamp(t)
+
+	return nil
+}
+
+type create func() (interface{}, error)
+
+func getOrSet(key string, fn create) (interface{}, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if value, found := ConnectionCache.Get(key); found {
+		return value, nil
+	} else {
+		value, err := fn()
+		if err != nil {
+			return nil, err
+		}
+		ConnectionCache.Set(key, value, cache.NoExpiration)
+		return value, nil
+	}
+}
+
+func makeParticle(script string, peerId peer.ID) Particle {
+	particle := Particle{}
+	particle.Action = "Particle"
+	particle.ID = uuid.New()
+	particle.InitPeerId = peerId
+	particle.Timestamp = timestamp(time.Now())
+	particle.Ttl = 60000
+	particle.Script = script
+	particle.Signature = []int{}
+	particle.Data = []byte{}
+	return particle
+}
+
+func writeParticle(writer *bufio.Writer, particle Particle) error {
+	log.Debugf("Writing particle with id %s", particle.ID)
+	serialisedParticle, err := json.Marshal(particle)
+
+	if err != nil {
+		return err
+	}
+	_, err = writer.Write(varint.ToUvarint(uint64(len(serialisedParticle))))
+	if err != nil {
+		return err
+	}
+
+	_, err = writer.Write(serialisedParticle)
+	if err != nil {
+		return err
+	}
+	err = writer.Flush()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func readParticle(reader *bufio.Reader) (*Particle, error) {
+	log.Debug("Reading particle from the stream")
+	particleLen, err := varint.ReadUvarint(reader)
+	if err != nil {
+		return nil, err
+	}
+	particleBytes := make([]byte, particleLen)
+
+	_, err = io.ReadFull(reader, particleBytes)
+
+	if err != nil {
+		return nil, err
+	}
+
+	particle := Particle{}
+	err = json.Unmarshal(particleBytes, &particle)
+	if err != nil {
+		return nil, err
+	}
+	return &particle, nil
+}
+
+type MetricValue struct {
+	metric *metrics.Metric
+	value  float64
+}
+
+func writeMetrics(c *Connection, data []MetricValue) error {
+	state := c.f.vu.State()
+	ctm := c.f.vu.State().Tags.GetCurrentValues()
+	now := time.Now()
+	sampleTags := ctm.Tags.With("relay", c.relay)
+
+	if state == nil {
+		return MetricsSubmissionFailed
+	}
+
+	samples := make([]metrics.Sample, len(data))
+	for i := range data {
+		entry := data[i]
+		samples[i] = metrics.Sample{
+			Time: now,
+			TimeSeries: metrics.TimeSeries{
+				Metric: entry.metric,
+				Tags:   sampleTags,
+			},
+			Value:    entry.value,
+			Metadata: ctm.Metadata,
+		}
+	}
+
+	metrics.PushIfNotDone(c.ctx, state.Samples, metrics.ConnectedSamples{
+		Samples: samples,
+		Tags:    sampleTags,
+		Time:    now,
+	})
+	return nil
 }

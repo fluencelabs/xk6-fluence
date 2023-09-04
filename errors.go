@@ -6,15 +6,19 @@ type errCode uint32
 
 const (
 	// non specific.
-	wrongRelayAddress errCode = 1000
-	connectionFailed  errCode = 1001
-	sendFailed        errCode = 1002
+	wrongRelayAddress       errCode = 1000
+	connectionFailed        errCode = 1001
+	sendFailed              errCode = 1002
+	executeFailed           errCode = 1003
+	metricsSubmissionFailed errCode = 1004
 )
 
 var (
-	WrongRelayAddress = NewXk6Error(wrongRelayAddress, "Wrong multi-address format", nil)
-	ConnectionFailed  = NewXk6Error(connectionFailed, "Failed to connect to the remote peer", nil)
-	SendFailed        = NewXk6Error(sendFailed, "Could not send particle", nil)
+	WrongRelayAddress       = NewXk6Error(wrongRelayAddress, "Wrong multi-address format", nil)
+	ConnectionFailed        = NewXk6Error(connectionFailed, "Failed to connect to the remote peer", nil)
+	SendFailed              = NewXk6Error(sendFailed, "Could not send particle", nil)
+	ExecuteFailed           = NewXk6Error(executeFailed, "Could not execute particle", nil)
+	MetricsSubmissionFailed = NewXk6Error(metricsSubmissionFailed, "Could not submit metrics", nil)
 )
 
 type Xk6Error struct {
