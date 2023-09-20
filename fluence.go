@@ -12,7 +12,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
-	"github.com/patrickmn/go-cache"
 	"io"
 	"strconv"
 	"sync"
@@ -29,11 +28,6 @@ import (
 )
 
 var log = logging.Logger("fluence")
-
-var (
-	ConnectionCache *cache.Cache
-	mu              sync.Mutex
-)
 
 type Particle struct {
 	Action     string    `json:"action"`
@@ -52,11 +46,6 @@ type Builder struct {
 	remoteAddr peer.AddrInfo
 }
 
-type CachedBuilder struct {
-	b         *Builder
-	cacheType CacheType
-}
-
 type Connection struct {
 	f            *Fluence
 	ctx          context.Context
@@ -66,10 +55,6 @@ type Connection struct {
 	relay        string
 	remoteAddr   peer.AddrInfo
 	callbacks    sync.Map
-}
-
-type CachedConnection struct {
-	connection *Connection
 }
 
 func (f *Fluence) Builder(relay string) (*Builder, error) {
@@ -84,20 +69,6 @@ func (f *Fluence) Builder(relay string) (*Builder, error) {
 	builder.remoteAddr = *remoteAddr
 
 	return &builder, nil
-}
-
-type CacheType int8
-
-const (
-	PerVU  CacheType = 0
-	Global CacheType = 1
-)
-
-func (b *Builder) CacheBy(cacheType CacheType) *CachedBuilder {
-	builder := CachedBuilder{}
-	builder.b = b
-	builder.cacheType = cacheType
-	return &builder
 }
 
 func (b *Builder) Connect() (*Connection, error) {
@@ -115,6 +86,9 @@ func (b *Builder) Connect() (*Connection, error) {
 	cfg := rcmgr.PartialLimitConfig{
 		System: rcmgr.ResourceLimits{
 			// Allow unlimited streams
+			Conns:           rcmgr.Unlimited,
+			ConnsInbound:    rcmgr.Unlimited,
+			ConnsOutbound:   rcmgr.Unlimited,
 			Streams:         rcmgr.Unlimited,
 			StreamsInbound:  rcmgr.Unlimited,
 			StreamsOutbound: rcmgr.Unlimited,
@@ -227,73 +201,17 @@ func (b *Builder) Connect() (*Connection, error) {
 
 	})
 
-	err = writeMetrics(&con, []MetricValue{
-		{
-			metric: b.f.metrics.PeerConnectionCount,
-			value:  float64(1),
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	return &con, nil
 }
-
-func (cb *CachedBuilder) Connect() (*CachedConnection, error) {
-	key := ""
-	switch cb.cacheType {
-	case PerVU:
-		id := cb.b.f.vu.State().VUID
-		key = fmt.Sprintf("%d_%s", id, cb.b.relay)
-	case Global:
-		key = cb.b.relay
-	}
-	connect := func() (interface{}, error) {
-		underlyingConnection, err := cb.b.Connect()
-		if err != nil {
-			return nil, err
-		}
-		connection := CachedConnection{}
-		connection.connection = underlyingConnection
-		return &connection, nil
-	}
-	connection, err := getOrSet(key, connect)
-	if err != nil {
-		return nil, err
-	}
-	return connection.(*CachedConnection), nil
-}
-
-func (c *CachedConnection) Close() {
-
-}
-
 func (c *Connection) Close() {
 	c.finalizer()
-}
-
-func (c *CachedConnection) Send(script string) error {
-	err := c.connection.Send(script)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *CachedConnection) Execute(script string) (*Particle, error) {
-	particle, err := c.connection.Execute(script)
-	if err != nil {
-		return nil, err
-	}
-	return particle, nil
 }
 
 func (c *Connection) Send(script string) error {
 	particle := makeParticle(script, c.PeerId)
 	log.Debug("Sending particle: ", particle.ID)
 
-	stream, err := c.peerInstance.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
+	stream, err := c.peerInstance.NewStream(c.ctx, c.remoteAddr.ID, "/fluence/particle/2.0.0")
 	if err != nil {
 		log.Error("Could not create stream: ", err)
 		return ConnectionFailed
@@ -332,7 +250,7 @@ func (c *Connection) Execute(script string) (*Particle, error) {
 
 	start := time.Now()
 	callback, err := func() (chan *Particle, error) {
-		stream, err := c.peerInstance.NewStream(network.WithUseTransient(c.ctx, "fluence/particle/2.0.0"), c.remoteAddr.ID, "/fluence/particle/2.0.0")
+		stream, err := c.peerInstance.NewStream(c.ctx, c.remoteAddr.ID, "/fluence/particle/2.0.0")
 		if err != nil {
 			log.Error("Could not create stream: ", err)
 			return nil, ConnectionFailed
@@ -454,24 +372,6 @@ func (ct *timestamp) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
-
-type create func() (interface{}, error)
-
-func getOrSet(key string, fn create) (interface{}, error) {
-	mu.Lock()
-	defer mu.Unlock()
-	if value, found := ConnectionCache.Get(key); found {
-		return value, nil
-	} else {
-		value, err := fn()
-		if err != nil {
-			return nil, err
-		}
-		ConnectionCache.Set(key, value, cache.NoExpiration)
-		return value, nil
-	}
-}
-
 func makeParticle(script string, peerId peer.ID) Particle {
 	particle := Particle{}
 	particle.Action = "Particle"
@@ -537,13 +437,12 @@ type MetricValue struct {
 
 func writeMetrics(c *Connection, data []MetricValue) error {
 	state := c.f.vu.State()
-	ctm := c.f.vu.State().Tags.GetCurrentValues()
-	now := time.Now()
-	sampleTags := ctm.Tags.With("relay", c.relay)
-
 	if state == nil {
 		return MetricsSubmissionFailed
 	}
+	ctm := state.Tags.GetCurrentValues()
+	now := time.Now()
+	sampleTags := ctm.Tags.With("relay", c.relay)
 
 	samples := make([]metrics.Sample, len(data))
 	for i := range data {

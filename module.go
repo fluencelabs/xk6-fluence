@@ -2,21 +2,11 @@ package fluence
 
 import (
 	"github.com/dop251/goja"
-	"time"
-
-	"github.com/patrickmn/go-cache"
 	"go.k6.io/k6/js/common"
 	"go.k6.io/k6/js/modules"
 )
 
 func init() {
-
-	ConnectionCache = cache.New(5*time.Minute, 10*time.Minute)
-	ConnectionCache.OnEvicted(func(key string, value interface{}) {
-		connection := value.(*CachedConnection)
-		connection.connection.Close()
-	})
-
 	modules.Register("k6/x/fluence", New())
 }
 
