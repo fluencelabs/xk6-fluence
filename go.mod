@@ -1,6 +1,6 @@
-module xk6-fluence
+module github.com/fluencelabs/xk6-fluence
 
-go 1.20
+go 1.21
 
 require (
 	github.com/dop251/goja v0.0.0-20230812105242-81d76064690d
