@@ -144,14 +144,6 @@ func (b *Builder) Connect() (*Connection, error) {
 		return nil, ConnectionFailed
 	}
 
-	if err := peerInstance.Connect(ctx, b.remoteAddr); err != nil {
-		log.Error("Could not connect to remote addr: ", err)
-		cancel()
-		return nil, ConnectionFailed
-	}
-
-	peerInstance.Peerstore().AddAddrs(b.remoteAddr.ID, b.remoteAddr.Addrs, peerstore.PermanentAddrTTL)
-
 	finalizer := func() {
 		log.Debug("Connection finalizer called")
 		err = peerInstance.Close()
@@ -200,6 +192,14 @@ func (b *Builder) Connect() (*Connection, error) {
 		}
 
 	})
+	
+	if err := peerInstance.Connect(ctx, b.remoteAddr); err != nil {
+		log.Error("Could not connect to remote addr: ", err)
+		cancel()
+		return nil, ConnectionFailed
+	}
+
+	peerInstance.Peerstore().AddAddrs(b.remoteAddr.ID, b.remoteAddr.Addrs, peerstore.PermanentAddrTTL)
 
 	return &con, nil
 }
