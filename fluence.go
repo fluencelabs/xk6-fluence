@@ -29,12 +29,14 @@ import (
 
 var log = logging.Logger("fluence")
 
+var DEFAULT_TTL = 5 * time.Minute
+
 type Particle struct {
 	Action     string    `json:"action"`
 	ID         uuid.UUID `json:"id"`
 	InitPeerId peer.ID   `json:"init_peer_id"`
 	Timestamp  timestamp `json:"timestamp"`
-	Ttl        uint32    `json:"ttl"`
+	Ttl        int64    `json:"ttl"`
 	Script     string    `json:"script"`
 	Signature  []int     `json:"signature"`
 	Data       []byte    `json:"data"`
@@ -120,6 +122,8 @@ func (b *Builder) Connect() (*Connection, error) {
 	cm, err := connmgr.NewConnManager(
 		10,
 		4000,
+		connmgr.WithGracePeriod(1*time.Minute),
+		connmgr.WithSilencePeriod(1*time.Minute),
 	)
 
 	if err != nil {
@@ -192,7 +196,7 @@ func (b *Builder) Connect() (*Connection, error) {
 		}
 
 	})
-	
+
 	if err := peerInstance.Connect(ctx, b.remoteAddr); err != nil {
 		log.Error("Could not connect to remote addr: ", err)
 		cancel()
@@ -252,8 +256,7 @@ func (c *Connection) Execute(script string) (*Particle, error) {
 	callback, err := func() (chan *Particle, error) {
 		stream, err := c.peerInstance.NewStream(c.ctx, c.remoteAddr.ID, "/fluence/particle/2.0.0")
 		if err != nil {
-			log.Error("Could not create stream: ", err)
-			return nil, ConnectionFailed
+			return nil, err
 		}
 		defer func(stream network.Stream) {
 			err := stream.Close()
@@ -266,7 +269,7 @@ func (c *Connection) Execute(script string) (*Particle, error) {
 		c.callbacks.Store(particle.ID, callback)
 		err = writeParticle(bufio.NewWriter(stream), particle)
 		if err != nil {
-			return nil, ExecuteFailed
+			return nil, err
 		}
 		err = writeMetrics(c, []MetricValue{
 			{
@@ -279,6 +282,7 @@ func (c *Connection) Execute(script string) (*Particle, error) {
 	}()
 
 	if err != nil {
+		log.Error("Could not send particle: ", err)
 		return nil, ExecuteFailed
 	}
 
@@ -310,7 +314,7 @@ func (c *Connection) Execute(script string) (*Particle, error) {
 		}
 
 		return response, nil
-	case <-time.After(time.Minute):
+		case <-time.After(DEFAULT_TTL):
 		return nil, errors.New("particle timeout")
 	}
 }
@@ -378,7 +382,7 @@ func makeParticle(script string, peerId peer.ID) Particle {
 	particle.ID = uuid.New()
 	particle.InitPeerId = peerId
 	particle.Timestamp = timestamp(time.Now())
-	particle.Ttl = 60000
+	particle.Ttl = DEFAULT_TTL.Milliseconds()
 	particle.Script = script
 	particle.Signature = []int{}
 	particle.Data = []byte{}
