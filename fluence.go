@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/dop251/goja"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	"go.k6.io/k6/js/promises"
 	"io"
 	"strconv"
 	"sync"
@@ -243,6 +245,87 @@ func (c *Connection) Send(script string) error {
 	}
 
 	return nil
+}
+
+func (c *Connection) AsyncExecute(script string) *goja.Promise {
+	promise, resolve, reject := promises.New(c.f.vu)
+
+	go func() {
+		particle := makeParticle(script, c.PeerId)
+		log.Debug("Execute particle: ", particle.ID)
+		start := time.Now()
+
+		callback, err := func() (chan *Particle, error) {
+			stream, err := c.peerInstance.NewStream(c.ctx, c.remoteAddr.ID, "/fluence/particle/2.0.0")
+			if err != nil {
+				return nil, err
+			}
+			defer func(stream network.Stream) {
+				err := stream.Close()
+				if err != nil {
+					log.Warn("Could not close stream: ", err)
+				}
+			}(stream)
+
+			callback := make(chan *Particle, 1)
+			c.callbacks.Store(particle.ID, callback)
+			err = writeParticle(bufio.NewWriter(stream), particle)
+			if err != nil {
+				return nil, err
+			}
+			err = writeMetrics(c, []MetricValue{
+				{
+					metric: c.f.metrics.ParticleSendCount,
+					value:  float64(1),
+				},
+			})
+
+			return callback, nil
+		}()
+
+		if err != nil {
+			log.Error("Could not send particle: ", err)
+			reject(err)
+			return
+		}
+
+		defer func() {
+			callback, loaded := c.callbacks.LoadAndDelete(particle.ID)
+			if loaded {
+				callback := callback.(chan *Particle)
+				close(callback)
+			}
+		}()
+
+		select {
+		case response := <-callback:
+			now := time.Now()
+			duration := now.Sub(start)
+
+			err = writeMetrics(c, []MetricValue{
+				{
+					metric: c.f.metrics.ParticleReceiveCount,
+					value:  float64(1),
+				},
+				{
+					metric: c.f.metrics.ParticleExecutionTime,
+					value:  metrics.D(duration),
+				},
+			})
+			if err != nil {
+				reject(err)
+				return
+			}
+			resolve(response)
+			return
+		case <-time.After(DefaultTtl):
+			reject(errors.New("particle timeout"))
+			return
+		}
+
+	}()
+
+	return promise
 }
 
 func (c *Connection) Execute(script string) (*Particle, error) {
