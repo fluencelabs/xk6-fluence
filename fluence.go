@@ -28,8 +28,6 @@ import (
 	"github.com/multiformats/go-varint"
 )
 
-var DefaultTtl = 5 * time.Minute
-
 type Particle struct {
 	Action     string    `json:"action"`
 	ID         uuid.UUID `json:"id"`
@@ -210,8 +208,8 @@ func (c *Connection) Close() {
 	c.finalizer()
 }
 
-func (c *Connection) Send(script string) error {
-	particle := makeParticle(script, c.PeerId)
+func (c *Connection) Send(script string, timeout time.Duration) error {
+	particle := makeParticle(script, c.PeerId, timeout)
 	log.Debug("Sending particle: ", particle.ID)
 
 	stream, err := c.peerInstance.NewStream(c.ctx, c.remoteAddr.ID, "/fluence/particle/2.0.0")
@@ -247,11 +245,11 @@ func (c *Connection) Send(script string) error {
 	return nil
 }
 
-func (c *Connection) AsyncExecute(script string) *goja.Promise {
+func (c *Connection) AsyncExecute(script string, timeout time.Duration) *goja.Promise {
 	promise, resolve, reject := promises.New(c.f.vu)
 
 	go func() {
-		particle := makeParticle(script, c.PeerId)
+		particle := makeParticle(script, c.PeerId, timeout)
 		log.Debug("Execute particle: ", particle.ID)
 		start := time.Now()
 
@@ -318,7 +316,7 @@ func (c *Connection) AsyncExecute(script string) *goja.Promise {
 			}
 			resolve(response)
 			return
-		case <-time.After(DefaultTtl):
+		case <-time.After(timeout):
 			reject(errors.New("particle timeout"))
 			return
 		}
@@ -328,8 +326,8 @@ func (c *Connection) AsyncExecute(script string) *goja.Promise {
 	return promise
 }
 
-func (c *Connection) Execute(script string) (*Particle, error) {
-	particle := makeParticle(script, c.PeerId)
+func (c *Connection) Execute(script string, timeout time.Duration) (*Particle, error) {
+	particle := makeParticle(script, c.PeerId, timeout)
 	log.Debug("Execute particle: ", particle.ID)
 
 	start := time.Now()
@@ -394,12 +392,12 @@ func (c *Connection) Execute(script string) (*Particle, error) {
 		}
 
 		return response, nil
-	case <-time.After(DefaultTtl):
+	case <-time.After(timeout):
 		return nil, errors.New("particle timeout")
 	}
 }
 
-func (f *Fluence) SendParticle(relay, script string) error {
+func (f *Fluence) SendParticle(relay, script string, timeout time.Duration) error {
 	builder, err := f.Builder(relay)
 	if err != nil {
 		return err
@@ -409,14 +407,14 @@ func (f *Fluence) SendParticle(relay, script string) error {
 		return err
 	}
 	defer connection.Close()
-	err = connection.Send(script)
+	err = connection.Send(script, timeout)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (f *Fluence) ExecuteParticle(relay, script string) (*Particle, error) {
+func (f *Fluence) ExecuteParticle(relay, script string, timeout time.Duration) (*Particle, error) {
 	builder, err := f.Builder(relay)
 	if err != nil {
 		return nil, err
@@ -426,7 +424,7 @@ func (f *Fluence) ExecuteParticle(relay, script string) (*Particle, error) {
 		return nil, err
 	}
 	defer connection.Close()
-	particle, err := connection.Execute(script)
+	particle, err := connection.Execute(script, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -457,13 +455,13 @@ func (ct *timestamp) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func makeParticle(script string, peerId peer.ID) Particle {
+func makeParticle(script string, peerId peer.ID, timeout time.Duration) Particle {
 	particle := Particle{}
 	particle.Action = "Particle"
 	particle.ID = uuid.New()
 	particle.InitPeerId = peerId
 	particle.Timestamp = timestamp(time.Now())
-	particle.Ttl = DefaultTtl.Milliseconds()
+	particle.Ttl = timeout.Milliseconds()
 	particle.Script = script
 	particle.Signature = []int{}
 	particle.Data = []byte{}
