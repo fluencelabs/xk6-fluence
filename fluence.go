@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	logging "github.com/ipfs/go-log/v2"
 	"go.k6.io/k6/metrics"
 
 	"github.com/google/uuid"
@@ -27,16 +26,14 @@ import (
 	"github.com/multiformats/go-varint"
 )
 
-var log = logging.Logger("fluence")
-
-var DEFAULT_TTL = 5 * time.Minute
+var DefaultTtl = 5 * time.Minute
 
 type Particle struct {
 	Action     string    `json:"action"`
 	ID         uuid.UUID `json:"id"`
 	InitPeerId peer.ID   `json:"init_peer_id"`
 	Timestamp  timestamp `json:"timestamp"`
-	Ttl        int64    `json:"ttl"`
+	Ttl        int64     `json:"ttl"`
 	Script     string    `json:"script"`
 	Signature  []int     `json:"signature"`
 	Data       []byte    `json:"data"`
@@ -314,7 +311,7 @@ func (c *Connection) Execute(script string) (*Particle, error) {
 		}
 
 		return response, nil
-		case <-time.After(DEFAULT_TTL):
+	case <-time.After(DefaultTtl):
 		return nil, errors.New("particle timeout")
 	}
 }
@@ -376,13 +373,14 @@ func (ct *timestamp) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
+
 func makeParticle(script string, peerId peer.ID) Particle {
 	particle := Particle{}
 	particle.Action = "Particle"
 	particle.ID = uuid.New()
 	particle.InitPeerId = peerId
 	particle.Timestamp = timestamp(time.Now())
-	particle.Ttl = DEFAULT_TTL.Milliseconds()
+	particle.Ttl = DefaultTtl.Milliseconds()
 	particle.Script = script
 	particle.Signature = []int{}
 	particle.Data = []byte{}
@@ -468,4 +466,12 @@ func writeMetrics(c *Connection, data []MetricValue) error {
 		Time:    now,
 	})
 	return nil
+}
+
+func (f *Fluence) InjectPrometheusMetrics(params PrometheusParams) error {
+	state := f.vu.State()
+	if state == nil {
+		return MetricsSubmissionFailed
+	}
+	return f.metrics.InjectPrometheusMetrics(state, params)
 }

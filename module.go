@@ -55,6 +55,7 @@ func (*RootModule) NewModuleInstance(virtualUser modules.VU) modules.Instance {
 
 	mustExport("sendParticle", moduleInstance.SendParticle)
 	mustExport("builder", moduleInstance.Builder)
+	mustExport("injectPrometheusMetrics", moduleInstance.InjectPrometheusMetrics)
 
 	return moduleInstance
 }
@@ -64,3 +65,4 @@ func (m *Module) Exports() modules.Exports {
 		Default: m.Fluence.exports,
 	}
 }
+
