@@ -199,6 +199,18 @@ func (m *fluenceMetrics) InjectPrometheusMetrics(state *lib.State, params Promet
 	}
 	samples = append(samples, networkBytesSendTotal...)
 
+	fsUsageTotal, err := m.fetchFsUsageBytesTotal(ctx, api, r, ctm, params.Env)
+	if err != nil {
+		log.Warn("Could not fetch fs usage total: ", err)
+	}
+	samples = append(samples, fsUsageTotal...)
+
+	fsUsagePerSecond, err := m.fetchFsUsageBytesPerSecond(ctx, api, r, ctm, params.Env)
+	if err != nil {
+		log.Warn("Could not fetch fs usage per second: ", err)
+	}
+	samples = append(samples, fsUsagePerSecond...)
+
 	metrics.PushIfNotDone(ctx, state.Samples, metrics.Samples(samples))
 
 	err = m.injectInterpretationTime(ctx, api, r, ctm, state, params.Env)
@@ -266,22 +278,32 @@ func (m *fluenceMetrics) fetchMemoryUsage(ctx context.Context, api prometheusv1.
 
 func (m *fluenceMetrics) fetchNetworkBytesReceivedPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
 	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (rate(container_network_receive_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_bytes_received_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (rate(container_network_receive_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_received_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
 }
 
 func (m *fluenceMetrics) fetchNetworkBytesReceivedTotal(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
 	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_network_receive_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_bytes_received_total", ctx, api, r, tagsMeta, metrics.Counter, metrics.Data)
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_network_receive_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_received_total", ctx, api, r, tagsMeta, metrics.Counter, metrics.Data)
 }
 
 func (m *fluenceMetrics) fetchNetworkBytesSendPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
 	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (rate(container_network_transmit_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_bytes_send_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (rate(container_network_transmit_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_send_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
 }
 
 func (m *fluenceMetrics) fetchNetworkBytesSendTotal(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
 	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_network_transmit_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_bytes_send_total", ctx, api, r, tagsMeta, metrics.Counter, metrics.Data)
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_network_transmit_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_send_total", ctx, api, r, tagsMeta, metrics.Counter, metrics.Data)
+}
+
+func (m *fluenceMetrics) fetchFsUsageBytesPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
+	r.Step = 1 * time.Minute
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (rate(container_fs_usage_bytes{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_fs_bytes_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
+}
+
+func (m *fluenceMetrics) fetchFsUsageBytesTotal(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
+	r.Step = 1 * time.Minute
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_fs_usage_bytes{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_fs_bytes_total", ctx, api, r, tagsMeta, metrics.Counter, metrics.Data)
 }
 
 func (m *fluenceMetrics) injectInterpretationTime(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, state *lib.State, env string) error {
