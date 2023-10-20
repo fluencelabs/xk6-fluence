@@ -90,7 +90,7 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 func (m *fluenceMetrics) InjectPrometheusMetrics(state *lib.State, params PrometheusParams) error {
 	log.Debug("Inject metrics from: ", params.Address)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //TODO: make constant for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) //TODO: make constant for timeout
 	defer cancel()
 
 	config := prometheus.Config{
@@ -113,6 +113,10 @@ func (m *fluenceMetrics) InjectPrometheusMetrics(state *lib.State, params Promet
 	r := prometheusv1.Range{Start: params.Start, End: params.End, Step: time.Minute}
 
 	ctm := state.Tags.GetCurrentValues()
+
+	log.Info("Waiting 0 rates...")
+	m.waitZeroRates(ctx, api, params.Env)
+	log.Info("Waiting 0 rates finished")
 
 	var samples []metrics.Sample
 	sendParticlePerSecondSamples, err := m.fetchSendParticlesPerSecond(ctx, api, r, ctm, params.Env)
@@ -168,6 +172,18 @@ func (m *fluenceMetrics) InjectPrometheusMetrics(state *lib.State, params Promet
 		log.Warn("Could not fetch cpu load: ", err)
 	}
 	samples = append(samples, cpuLoad...)
+
+	cpuLoadUser, err := m.fetchCpuTimeUser(ctx, api, r, ctm, params.Env)
+	if err != nil {
+		log.Warn("Could not fetch cpu load user: ", err)
+	}
+	samples = append(samples, cpuLoadUser...)
+
+	cpuLoadSystem, err := m.fetchCpuTimeSystem(ctx, api, r, ctm, params.Env)
+	if err != nil {
+		log.Warn("Could not fetch cpu load system: ", err)
+	}
+	samples = append(samples, cpuLoadSystem...)
 
 	memoryUsage, err := m.fetchMemoryUsage(ctx, api, r, ctm, params.Env)
 	if err != nil {
@@ -226,6 +242,86 @@ func (m *fluenceMetrics) InjectPrometheusMetrics(state *lib.State, params Promet
 	return nil
 }
 
+func (m *fluenceMetrics) waitZeroRates(ctx context.Context, api prometheusv1.API, env string) {
+	finishCh := make(chan string, 1)
+	go func() {
+	outer:
+		for {
+			query := fmt.Sprintf("sum by (instance) (rate(connection_pool_received_particles_total{env=\"%s\"}[1m]))", env)
+			rates, err := m.fetchLatest(query, ctx, api)
+			log.Info("Rates: ", rates)
+			if err != nil {
+				log.Warn("Could not fetch received particles rates: ", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			for _, rate := range rates {
+				if rate.value != 0 {
+					time.Sleep(5 * time.Second)
+					continue outer
+				}
+			}
+			query = fmt.Sprintf("sum by (instance) (rate(connectivity_particle_send_success_total{env=\"%s\"}[1m]))", env)
+			rates, err = m.fetchLatest(query, ctx, api)
+			log.Info("Rates: ", rates)
+			if err != nil {
+				log.Warn("Could not fetch send particles rates: ", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			for _, rate := range rates {
+				if rate.value != 0 {
+					time.Sleep(5 * time.Second)
+					continue outer
+				}
+			}
+			finishCh <- "done"
+			break
+		}
+	}()
+
+	select {
+	case _ = <-finishCh:
+		{
+
+		}
+	case <-time.After(2 * time.Minute):
+		log.Warn("Rate waiting timeout")
+	}
+}
+
+type rate struct {
+	instance string
+	value    float64
+}
+
+func (m *fluenceMetrics) fetchLatest(query string, ctx context.Context, api prometheusv1.API) ([]rate, error) {
+	now := time.Now()
+	result, warnings, err := api.Query(ctx, query, now, prometheusv1.WithTimeout(5*time.Second)) //TODO: make constant for timeout and env as parameter
+	if err != nil {
+		return nil, err
+	}
+
+	if len(warnings) > 0 {
+		log.Warn("Warnings: ", warnings)
+	}
+	var rates []rate
+
+	if vector, ok := result.(model.Vector); ok {
+		for _, sample := range vector {
+			instance := string(sample.Metric["instance"])
+			rates = append(rates, rate{
+				instance: instance,
+				value:    float64(sample.Value),
+			})
+		}
+	} else {
+		log.Warn("Query did not return a valid vector.")
+	}
+
+	return rates, nil
+}
+
 func (m *fluenceMetrics) fetchSendParticlesPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
 	r.Step = 15 * time.Millisecond
 	return m.fetchQueryData(fmt.Sprintf("sum by (env,instance) (rate(connectivity_particle_send_success_total{env=\"%s\"}[1m]))", env), "fluence_peer_%s_particle_per_second_receive", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
@@ -268,7 +364,17 @@ func (m *fluenceMetrics) fetchLoadAverage15(ctx context.Context, api prometheusv
 
 func (m *fluenceMetrics) fetchCpuTime(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
 	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_user_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	return m.fetchQueryData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_usage_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+}
+
+func (m *fluenceMetrics) fetchCpuTimeUser(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
+	r.Step = 15 * time.Millisecond
+	return m.fetchQueryData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_user_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_user_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+}
+
+func (m *fluenceMetrics) fetchCpuTimeSystem(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
+	r.Step = 15 * time.Millisecond
+	return m.fetchQueryData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_system_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_system_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchMemoryUsage(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
