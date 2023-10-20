@@ -90,7 +90,7 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 func (m *fluenceMetrics) InjectPrometheusMetrics(state *lib.State, params PrometheusParams) error {
 	log.Debug("Inject metrics from: ", params.Address)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) //TODO: make constant for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) //TODO: make constant for timeout
 	defer cancel()
 
 	config := prometheus.Config{
@@ -247,7 +247,7 @@ func (m *fluenceMetrics) waitZeroRates(ctx context.Context, api prometheusv1.API
 	go func() {
 	outer:
 		for {
-			query := fmt.Sprintf("sum by (instance) (rate(connection_pool_received_particles_total{env=\"%s\"}[1m]))", env)
+			query := fmt.Sprintf("sum by (instance) (rate(connection_pool_received_particles_total{env=\"%s\"}[30s]))", env)
 			rates, err := m.fetchLatest(query, ctx, api)
 			log.Info("Rates: ", rates)
 			if err != nil {
@@ -261,7 +261,7 @@ func (m *fluenceMetrics) waitZeroRates(ctx context.Context, api prometheusv1.API
 					continue outer
 				}
 			}
-			query = fmt.Sprintf("sum by (instance) (rate(connectivity_particle_send_success_total{env=\"%s\"}[1m]))", env)
+			query = fmt.Sprintf("sum by (instance) (rate(connectivity_particle_send_success_total{env=\"%s\"}[30s]))", env)
 			rates, err = m.fetchLatest(query, ctx, api)
 			log.Info("Rates: ", rates)
 			if err != nil {
@@ -285,7 +285,7 @@ func (m *fluenceMetrics) waitZeroRates(ctx context.Context, api prometheusv1.API
 		{
 
 		}
-	case <-time.After(2 * time.Minute):
+	case <-time.After(1 * time.Minute):
 		log.Warn("Rate waiting timeout")
 	}
 }
