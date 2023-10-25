@@ -215,17 +215,29 @@ func (m *fluenceMetrics) InjectPrometheusMetrics(state *lib.State, params Promet
 	}
 	samples = append(samples, networkBytesSendTotal...)
 
-	fsUsageTotal, err := m.fetchFsUsageBytesTotal(ctx, api, r, ctm, params.Env)
+	fsWriteBytesTotal, err := m.fetchFsWriteBytesTotal(ctx, api, r, ctm, params.Env)
 	if err != nil {
-		log.Warn("Could not fetch fs usage total: ", err)
+		log.Warn("Could not fetch fs write bytes total: ", err)
 	}
-	samples = append(samples, fsUsageTotal...)
+	samples = append(samples, fsWriteBytesTotal...)
 
-	fsUsagePerSecond, err := m.fetchFsUsageBytesPerSecond(ctx, api, r, ctm, params.Env)
+	fsWriteBytesPerSecond, err := m.fetchFsWriteBytesPerSecond(ctx, api, r, ctm, params.Env)
 	if err != nil {
-		log.Warn("Could not fetch fs usage per second: ", err)
+		log.Warn("Could not fetch fs write bytes per second: ", err)
 	}
-	samples = append(samples, fsUsagePerSecond...)
+	samples = append(samples, fsWriteBytesPerSecond...)
+
+	fsReadBytesTotal, err := m.fetchFsReadBytesTotal(ctx, api, r, ctm, params.Env)
+	if err != nil {
+		log.Warn("Could not fetch fs read bytes total: ", err)
+	}
+	samples = append(samples, fsReadBytesTotal...)
+
+	fsReadBytesPerSecond, err := m.fetchFsReadBytesPerSecond(ctx, api, r, ctm, params.Env)
+	if err != nil {
+		log.Warn("Could not fetch fs read bytes per second: ", err)
+	}
+	samples = append(samples, fsReadBytesPerSecond...)
 
 	metrics.PushIfNotDone(ctx, state.Samples, metrics.Samples(samples))
 
@@ -295,130 +307,113 @@ type rate struct {
 	value    float64
 }
 
-func (m *fluenceMetrics) fetchLatest(query string, ctx context.Context, api prometheusv1.API) ([]rate, error) {
-	now := time.Now()
-	result, warnings, err := api.Query(ctx, query, now, prometheusv1.WithTimeout(5*time.Second)) //TODO: make constant for timeout and env as parameter
-	if err != nil {
-		return nil, err
-	}
-
-	if len(warnings) > 0 {
-		log.Warn("Warnings: ", warnings)
-	}
-	var rates []rate
-
-	if vector, ok := result.(model.Vector); ok {
-		for _, sample := range vector {
-			instance := string(sample.Metric["instance"])
-			rates = append(rates, rate{
-				instance: instance,
-				value:    float64(sample.Value),
-			})
-		}
-	} else {
-		log.Warn("Query did not return a valid vector.")
-	}
-
-	return rates, nil
-}
-
 func (m *fluenceMetrics) fetchSendParticlesPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("sum by (env,instance) (rate(connectivity_particle_send_success_total{env=\"%s\"}[1m]))", env), "fluence_peer_%s_particle_per_second_receive", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by (env,instance) (rate(connectivity_particle_send_success_total{env=\"%s\"}[1m]))", env), "fluence_peer_%s_particle_per_second_receive", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchReceiveParticlesPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("sum by (env,instance) (rate(connection_pool_received_particles_total{env=\"%s\"}[1m]))", env), "fluence_peer_%s_particle_per_second_receive", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by (env,instance) (rate(connection_pool_received_particles_total{env=\"%s\"}[1m]))", env), "fluence_peer_%s_particle_per_second_receive", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchConnectionCount(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("connection_pool_connected_peers{env=\"%s\"}", env), "fluence_peer_%s_connection_count", ctx, api, r, tagsMeta, metrics.Gauge, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("connection_pool_connected_peers{env=\"%s\"}", env), "fluence_peer_%s_connection_count", ctx, api, r, tagsMeta, metrics.Gauge, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchInterperatationPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("sum by (instance) (rate(particle_executor_interpretation_time_sec_count{env=~\"%s\"}[1m]))", env), "fluence_peer_%s_interpretation_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by (instance) (rate(particle_executor_interpretation_time_sec_count{env=~\"%s\"}[1m]))", env), "fluence_peer_%s_interpretation_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchServiceCallPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("sum by (instance) (rate(particle_executor_service_call_time_sec_count{env=~\"%s\"}[1m]))", env), "fluence_peer_%s_service_call_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by (instance) (rate(particle_executor_service_call_time_sec_count{env=~\"%s\"}[1m]))", env), "fluence_peer_%s_service_call_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchLoadAverage1(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("avg by(instance) (node_load1{env=\"%s\"})", env), "fluence_peer_%s_load_average_1m", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("avg by(instance) (node_load1{env=\"%s\"})", env), "fluence_peer_%s_load_average_1m", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchLoadAverage5(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("avg by(instance) (node_load5{env=\"%s\"})", env), "fluence_peer_%s_load_average_5m", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("avg by(instance) (node_load5{env=\"%s\"})", env), "fluence_peer_%s_load_average_5m", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchLoadAverage15(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("avg by(instance) (node_load15{env=\"%s\"})", env), "fluence_peer_%s_load_average_15m", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("avg by(instance) (node_load15{env=\"%s\"})", env), "fluence_peer_%s_load_average_15m", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchCpuTime(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_usage_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_usage_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchCpuTimeUser(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_user_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_user_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_user_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_user_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchCpuTimeSystem(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_system_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_system_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by (name,instance) (rate(container_cpu_system_seconds_total{env=~\"%s\",image!=\"\", name=~\"nox.*\"}[1m]) * 100)", env), "fluence_peer_%s_cpu_system_load", ctx, api, r, tagsMeta, metrics.Trend, metrics.Default)
 }
 
 func (m *fluenceMetrics) fetchMemoryUsage(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 15 * time.Millisecond
-	return m.fetchQueryData(fmt.Sprintf("container_memory_usage_bytes{env=~\"%s\",image!=\"\", name=~\"nox.*\"}", env), "fluence_peer_%s_memory_usage", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("container_memory_usage_bytes{env=~\"%s\",image!=\"\", name=~\"nox.*\"}", env), "fluence_peer_%s_memory_usage", ctx, api, r, tagsMeta, metrics.Gauge, metrics.Data)
 }
 
 func (m *fluenceMetrics) fetchNetworkBytesReceivedPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (rate(container_network_receive_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_received_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by(instance) (rate(container_network_receive_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_received_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
 }
 
 func (m *fluenceMetrics) fetchNetworkBytesReceivedTotal(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_network_receive_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_received_total", ctx, api, r, tagsMeta, metrics.Counter, metrics.Data)
+	duration := r.End.Sub(r.Start)
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_network_receive_bytes_total{env=~\"%s\", name=~\"nox.*\"}[%dms]))", env, duration.Milliseconds()), "fluence_peer_%s_network_bytes_received_total", ctx, api, tagsMeta, metrics.Gauge, metrics.Data)
 }
 
 func (m *fluenceMetrics) fetchNetworkBytesSendPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (rate(container_network_transmit_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_send_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by(instance) (rate(container_network_transmit_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_send_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
 }
 
 func (m *fluenceMetrics) fetchNetworkBytesSendTotal(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_network_transmit_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_network_bytes_send_total", ctx, api, r, tagsMeta, metrics.Counter, metrics.Data)
+	duration := r.End.Sub(r.Start)
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_network_transmit_bytes_total{env=~\"%s\", name=~\"nox.*\"}[%dms]))", env, duration.Milliseconds()), "fluence_peer_%s_network_bytes_send_total", ctx, api, tagsMeta, metrics.Gauge, metrics.Data)
 }
 
-func (m *fluenceMetrics) fetchFsUsageBytesPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (rate(container_fs_usage_bytes{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_fs_bytes_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
+func (m *fluenceMetrics) fetchFsWriteBytesPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by(instance) (rate(container_fs_writes_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_fs_write_bytes_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
 }
 
-func (m *fluenceMetrics) fetchFsUsageBytesTotal(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
-	r.Step = 1 * time.Minute
-	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_fs_usage_bytes{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_fs_bytes_total", ctx, api, r, tagsMeta, metrics.Counter, metrics.Data)
+func (m *fluenceMetrics) fetchFsWriteBytesTotal(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
+	duration := r.End.Sub(r.Start)
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_fs_writes_bytes_total{env=~\"%s\", name=~\"nox.*\"}[%dms]))", env, duration.Milliseconds()), "fluence_peer_%s_fs_write_bytes", ctx, api, tagsMeta, metrics.Gauge, metrics.Data)
+}
+
+func (m *fluenceMetrics) fetchFsReadBytesPerSecond(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
+	r.Step = 150 * time.Millisecond
+	return m.fetchQueryRangeData(fmt.Sprintf("sum by(instance) (rate(container_fs_reads_bytes_total{env=~\"%s\", name=~\"nox.*\"}[1m]))", env), "fluence_peer_%s_fs_read_bytes_per_second", ctx, api, r, tagsMeta, metrics.Trend, metrics.Data)
+}
+
+func (m *fluenceMetrics) fetchFsReadBytesTotal(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, env string) ([]metrics.Sample, error) {
+	duration := r.End.Sub(r.Start)
+	return m.fetchQueryData(fmt.Sprintf("sum by(instance) (increase(container_fs_reads_bytes_total{env=~\"%s\", name=~\"nox.*\"}[%dms]))", env, duration.Milliseconds()), "fluence_peer_%s_fs_read_bytes", ctx, api, tagsMeta, metrics.Gauge, metrics.Data)
 }
 
 func (m *fluenceMetrics) injectInterpretationTime(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, state *lib.State, env string) error {
-	r.Step = 15 * time.Millisecond
+	r.Step = 150 * time.Millisecond
 	return m.injectQueryHistoToTrend(fmt.Sprintf("sum by(instance, le) (increase(particle_executor_interpretation_time_sec_bucket{env=~\"%s\"}[1m]))", env), "fluence_peer_%s_interpretation_time", ctx, api, r, tagsMeta, state)
 }
 
 func (m *fluenceMetrics) injectServiceCallTime(ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, state *lib.State, env string) error {
-	r.Step = 15 * time.Millisecond
+	r.Step = 150 * time.Millisecond
 	return m.injectQueryHistoToTrend(fmt.Sprintf("sum by(instance, le) (increase(particle_executor_service_call_time_sec_bucket{env=~\"%s\"}[1m]))", env), "fluence_peer_%s_service_call_time", ctx, api, r, tagsMeta, state)
 }
 
@@ -518,7 +513,7 @@ func (m *fluenceMetrics) injectQueryHistoToTrend(query string, metricName string
 	return nil
 }
 
-func (m *fluenceMetrics) fetchQueryData(query string, metricName string, ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, metricType metrics.MetricType, valueType metrics.ValueType) ([]metrics.Sample, error) {
+func (m *fluenceMetrics) fetchQueryRangeData(query string, metricName string, ctx context.Context, api prometheusv1.API, r prometheusv1.Range, tagsMeta metrics.TagsAndMeta, metricType metrics.MetricType, valueType metrics.ValueType) ([]metrics.Sample, error) {
 	result, warnings, err := api.QueryRange(ctx, query, r, prometheusv1.WithTimeout(5*time.Second)) //TODO: make constant for timeout and env as parameter
 
 	if err != nil {
@@ -559,4 +554,69 @@ func (m *fluenceMetrics) fetchQueryData(query string, metricName string, ctx con
 	}
 
 	return samples, nil
+}
+
+func (m *fluenceMetrics) fetchQueryData(query string, metricName string, ctx context.Context, api prometheusv1.API, tagsMeta metrics.TagsAndMeta, metricType metrics.MetricType, valueType metrics.ValueType) ([]metrics.Sample, error) {
+	now := time.Now()
+	result, warnings, err := api.Query(ctx, query, now, prometheusv1.WithTimeout(5*time.Second)) //TODO: make constant for timeout and env as parameter
+	if err != nil {
+		return nil, err
+	}
+
+	if len(warnings) > 0 {
+		log.Warn("Warnings: ", warnings)
+	}
+	var samples []metrics.Sample
+
+	if vector, ok := result.(model.Vector); ok {
+		for _, entry := range vector {
+			instance := string(entry.Metric["instance"])
+			instance = strings.ReplaceAll(instance, "-", "_")
+			unixTime := time.UnixMilli(int64(entry.Timestamp))
+			metric, err := m.registry.NewMetric(fmt.Sprintf(metricName, instance), metricType, valueType)
+			if err != nil {
+				return nil, err
+			}
+			samples = append(samples, metrics.Sample{
+				Time: unixTime,
+				TimeSeries: metrics.TimeSeries{
+					Metric: metric,
+					Tags:   tagsMeta.Tags,
+				},
+				Value:    float64(entry.Value),
+				Metadata: tagsMeta.Metadata,
+			})
+		}
+	} else {
+		log.Warn("Query did not return a valid vector.")
+	}
+
+	return samples, nil
+}
+
+func (m *fluenceMetrics) fetchLatest(query string, ctx context.Context, api prometheusv1.API) ([]rate, error) {
+	now := time.Now()
+	result, warnings, err := api.Query(ctx, query, now, prometheusv1.WithTimeout(5*time.Second)) //TODO: make constant for timeout and env as parameter
+	if err != nil {
+		return nil, err
+	}
+
+	if len(warnings) > 0 {
+		log.Warn("Warnings: ", warnings)
+	}
+	var rates []rate
+
+	if vector, ok := result.(model.Vector); ok {
+		for _, sample := range vector {
+			instance := string(sample.Metric["instance"])
+			rates = append(rates, rate{
+				instance: instance,
+				value:    float64(sample.Value),
+			})
+		}
+	} else {
+		log.Warn("Query did not return a valid vector.")
+	}
+
+	return rates, nil
 }
