@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ import (
 
 type Particle struct {
 	Action     string    `json:"action"`
-	ID         uuid.UUID `json:"id"`
+	ID         string    `json:"id"`
 	InitPeerId peer.ID   `json:"init_peer_id"`
 	Timestamp  timestamp `json:"timestamp"`
 	Ttl        int64     `json:"ttl"`
@@ -54,6 +55,7 @@ type Connection struct {
 	relay        string
 	remoteAddr   peer.AddrInfo
 	callbacks    sync.Map
+	privKey      crypto.PrivKey
 }
 
 func (f *Fluence) Builder(relay string) (*Builder, error) {
@@ -243,7 +245,10 @@ func (c *Connection) UnsafeSend(data []byte) error {
 }
 
 func (c *Connection) Send(script string, timeout time.Duration) error {
-	particle := makeParticle(script, c.PeerId, timeout)
+	particle, err := makeParticle(c.privKey, script, c.PeerId, timeout)
+	if err != nil {
+		return err
+	}
 	log.Debug("Sending particle: ", particle.ID)
 
 	serialisedParticle, err := json.Marshal(particle)
@@ -257,7 +262,11 @@ func (c *Connection) AsyncExecute(script string, timeout time.Duration) *goja.Pr
 	promise, resolve, reject := promises.New(c.f.vu)
 
 	go func() {
-		particle := makeParticle(script, c.PeerId, timeout)
+		particle, err := makeParticle(c.privKey, script, c.PeerId, timeout)
+		if err != nil {
+			reject(err)
+			return
+		}
 		log.Debug("Execute particle: ", particle.ID)
 		start := time.Now()
 
@@ -275,7 +284,7 @@ func (c *Connection) AsyncExecute(script string, timeout time.Duration) *goja.Pr
 
 			callback := make(chan *Particle, 1)
 			c.callbacks.Store(particle.ID, callback)
-			err = writeParticle(bufio.NewWriter(stream), particle)
+			err = writeParticle(bufio.NewWriter(stream), *particle)
 			if err != nil {
 				return nil, err
 			}
@@ -335,7 +344,10 @@ func (c *Connection) AsyncExecute(script string, timeout time.Duration) *goja.Pr
 }
 
 func (c *Connection) Execute(script string, timeout time.Duration) (*Particle, error) {
-	particle := makeParticle(script, c.PeerId, timeout)
+	particle, err := makeParticle(c.privKey, script, c.PeerId, timeout)
+	if err != nil {
+		return nil, err
+	}
 	log.Debug("Execute particle: ", particle.ID)
 
 	start := time.Now()
@@ -353,7 +365,7 @@ func (c *Connection) Execute(script string, timeout time.Duration) (*Particle, e
 
 		callback := make(chan *Particle, 1)
 		c.callbacks.Store(particle.ID, callback)
-		err = writeParticle(bufio.NewWriter(stream), particle)
+		err = writeParticle(bufio.NewWriter(stream), *particle)
 		if err != nil {
 			return nil, err
 		}
@@ -463,17 +475,49 @@ func (ct *timestamp) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func makeParticle(script string, peerId peer.ID, timeout time.Duration) Particle {
+func makeParticle(privKey crypto.PrivKey, script string, peerId peer.ID, timeout time.Duration) (*Particle, error) {
 	particle := Particle{}
 	particle.Action = "Particle"
-	particle.ID = uuid.New()
+	particle.ID = uuid.New().String()
 	particle.InitPeerId = peerId
 	particle.Timestamp = timestamp(time.Now())
 	particle.Ttl = timeout.Milliseconds()
 	particle.Script = script
-	particle.Signature = []int{}
 	particle.Data = []byte{}
-	return particle
+
+	data, err := serialiseSignatireData(particle)
+	if err != nil {
+		return nil, err
+	}
+	signature, err := privKey.Sign(data)
+	if err != nil {
+		return nil, err
+	}
+
+	signatureInt := make([]int, len(signature))
+	for i, b := range signature {
+		signatureInt[i] = int(b)
+	}
+
+	particle.Signature = signatureInt
+
+	return &particle, err
+}
+
+func serialiseSignatireData(particle Particle) ([]byte, error) {
+	bytes := []byte(particle.ID)
+
+	timestampBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(timestampBytes, uint64(time.Time(particle.Timestamp).UnixMilli()))
+	bytes = append(bytes, timestampBytes...)
+
+	ttlBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(ttlBytes, uint32(particle.Ttl))
+	bytes = append(bytes, ttlBytes...)
+
+	bytes = append(bytes, []byte(particle.Script)...)
+
+	return bytes, nil
 }
 
 func unsafeWrite(writer *bufio.Writer, data []byte) error {
