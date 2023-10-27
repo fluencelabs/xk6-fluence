@@ -226,7 +226,13 @@ func (c *Connection) UnsafeSend(data []byte) error {
 
 	readWriter := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 
-	err = unsafeWrite(readWriter.Writer, data)
+	_, err = readWriter.Writer.Write(data)
+	if err != nil {
+		log.Error("Could not write particle to the stream: ", err)
+		return SendFailed
+	}
+
+	err = readWriter.Writer.Flush()
 	if err != nil {
 		log.Error("Could not write particle to the stream: ", err)
 		return SendFailed
@@ -245,6 +251,21 @@ func (c *Connection) UnsafeSend(data []byte) error {
 	return nil
 }
 
+func writeData(writer *bufio.Writer, data []byte) error {
+	_, err := writer.Write(data)
+	if err != nil {
+		log.Error("Could not write particle to the stream: ", err)
+		return SendFailed
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		log.Error("Could not write particle to the stream: ", err)
+		return SendFailed
+	}
+	return nil
+}
+
 func (c *Connection) Send(script string, timeout time.Duration) error {
 	particle, err := makeParticle(c.privKey, script, c.PeerId, timeout)
 	if err != nil {
@@ -256,7 +277,10 @@ func (c *Connection) Send(script string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	return c.UnsafeSend(serialisedParticle)
+
+	particleBytes := encodeByteArray(serialisedParticle)
+
+	return c.UnsafeSend(particleBytes)
 }
 
 func (c *Connection) AsyncExecute(script string, timeout time.Duration) *goja.Promise {
@@ -521,21 +545,10 @@ func serialiseSignatireData(particle Particle) ([]byte, error) {
 	return bytes, nil
 }
 
-func unsafeWrite(writer *bufio.Writer, data []byte) error {
-	_, err := writer.Write(varint.ToUvarint(uint64(len(data))))
-	if err != nil {
-		return err
-	}
-
-	_, err = writer.Write(data)
-	if err != nil {
-		return err
-	}
-	err = writer.Flush()
-	if err != nil {
-		return err
-	}
-	return nil
+func encodeByteArray(data []byte) []byte {
+	result := varint.ToUvarint(uint64(len(data)))
+	result = append(result, data...)
+	return result
 }
 
 func writeParticle(writer *bufio.Writer, particle Particle) error {
@@ -545,7 +558,10 @@ func writeParticle(writer *bufio.Writer, particle Particle) error {
 	if err != nil {
 		return err
 	}
-	return unsafeWrite(writer, serialisedParticle)
+
+	particleBytes := encodeByteArray(serialisedParticle)
+
+	return writeData(writer, particleBytes)
 }
 
 func readParticle(reader *bufio.Reader) (*Particle, error) {
