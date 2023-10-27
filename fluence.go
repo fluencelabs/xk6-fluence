@@ -208,10 +208,7 @@ func (c *Connection) Close() {
 	c.finalizer()
 }
 
-func (c *Connection) Send(script string, timeout time.Duration) error {
-	particle := makeParticle(script, c.PeerId, timeout)
-	log.Debug("Sending particle: ", particle.ID)
-
+func (c *Connection) UnsafeSend(data []byte) error {
 	stream, err := c.peerInstance.NewStream(c.ctx, c.remoteAddr.ID, "/fluence/particle/2.0.0")
 	if err != nil {
 		log.Error("Could not create stream: ", err)
@@ -226,7 +223,7 @@ func (c *Connection) Send(script string, timeout time.Duration) error {
 
 	readWriter := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 
-	err = writeParticle(readWriter.Writer, particle)
+	err = unsafeWrite(readWriter.Writer, data)
 	if err != nil {
 		log.Error("Could not write particle to the stream: ", err)
 		return SendFailed
@@ -243,6 +240,17 @@ func (c *Connection) Send(script string, timeout time.Duration) error {
 	}
 
 	return nil
+}
+
+func (c *Connection) Send(script string, timeout time.Duration) error {
+	particle := makeParticle(script, c.PeerId, timeout)
+	log.Debug("Sending particle: ", particle.ID)
+
+	serialisedParticle, err := json.Marshal(particle)
+	if err != nil {
+		return err
+	}
+	return c.UnsafeSend(serialisedParticle)
 }
 
 func (c *Connection) AsyncExecute(script string, timeout time.Duration) *goja.Promise {
@@ -468,19 +476,13 @@ func makeParticle(script string, peerId peer.ID, timeout time.Duration) Particle
 	return particle
 }
 
-func writeParticle(writer *bufio.Writer, particle Particle) error {
-	log.Debugf("Writing particle with id %s", particle.ID)
-	serialisedParticle, err := json.Marshal(particle)
-
-	if err != nil {
-		return err
-	}
-	_, err = writer.Write(varint.ToUvarint(uint64(len(serialisedParticle))))
+func unsafeWrite(writer *bufio.Writer, data []byte) error {
+	_, err := writer.Write(varint.ToUvarint(uint64(len(data))))
 	if err != nil {
 		return err
 	}
 
-	_, err = writer.Write(serialisedParticle)
+	_, err = writer.Write(data)
 	if err != nil {
 		return err
 	}
@@ -489,6 +491,16 @@ func writeParticle(writer *bufio.Writer, particle Particle) error {
 		return err
 	}
 	return nil
+}
+
+func writeParticle(writer *bufio.Writer, particle Particle) error {
+	log.Debugf("Writing particle with id %s", particle.ID)
+	serialisedParticle, err := json.Marshal(particle)
+
+	if err != nil {
+		return err
+	}
+	return unsafeWrite(writer, serialisedParticle)
 }
 
 func readParticle(reader *bufio.Reader) (*Particle, error) {
