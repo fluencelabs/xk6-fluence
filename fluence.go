@@ -166,6 +166,7 @@ func (b *Builder) Connect() (*Connection, error) {
 	con.remoteAddr = b.remoteAddr
 	con.peerInstance = peerInstance
 	con.callbacks = sync.Map{}
+	con.privKey = prvKey
 
 	peerInstance.SetStreamHandler("/fluence/particle/2.0.0", func(stream network.Stream) {
 		defer func() {
